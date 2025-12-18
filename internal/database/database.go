@@ -3,16 +3,16 @@ package database
 import (
 	"log"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
-	_ "modernc.org/sqlite"
 )
 
-// Connect opens a SQLite database using the provided DSN.
+// Connect opens a PostgreSQL database using the provided DSN.
 func Connect(dsn string) *sqlx.DB {
-	db, err := sqlx.Connect("sqlite", dsn)
+	db, err := sqlx.Connect("pgx", dsn)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(10)
 	return db
 }

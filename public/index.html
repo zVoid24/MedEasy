@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MedEasy POS API Tester</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+
+  <body>
+    <div class="app-container">
+      <header>
+        <h1>MedEasy POS <span class="highlight">API Tester</span></h1>
+        <div id="auth-status" class="status-badge disconnected">
+          Not Authenticated
+        </div>
+      </header>
+
+      <main>
+        <div class="panels-container">
+          <!-- Left Panel: Controls -->
+          <section class="controls-panel">
+            <div class="tabs">
+              <button class="tab-btn active" data-tab="auth">Auth</button>
+              <button class="tab-btn" data-tab="pharmacy">Pharmacy</button>
+              <button class="tab-btn" data-tab="medicine">Medicine</button>
+              <button class="tab-btn" data-tab="inventory">Inventory</button>
+              <button class="tab-btn" data-tab="sales">Sales</button>
+              <button class="tab-btn" data-tab="reports">Reports</button>
+            </div>
+
+            <!-- AUTH TAB -->
+            <div class="tab-content active" id="auth">
+              <h2>Authentication</h2>
+
+              <div class="card">
+                <h3>Register</h3>
+                <form id="register-form">
+                  <div class="form-group">
+                    <label>Username</label>
+                    <input
+                      type="text"
+                      name="username"
+                      placeholder="e.g. john_doe"
+                      required
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Email</label>
+                    <input
+                      type="email"
+                      name="email"
+                      placeholder="e.g. john@example.com"
+                      required
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Password</label>
+                    <input
+                      type="password"
+                      name="password"
+                      placeholder="********"
+                      required
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Role</label>
+                    <select name="role" id="register-role">
+                      <option value="owner">Owner</option>
+                      <option value="employee">Employee</option>
+                    </select>
+                  </div>
+
+                  <div id="owner-fields">
+                    <div class="form-group">
+                      <label>Pharmacy Name</label>
+                      <input
+                        type="text"
+                        name="pharmacy_name"
+                        placeholder="e.g. John's Pharmacy"
+                      />
+                    </div>
+
+                    <div class="form-group">
+                      <label>Address</label>
+                      <input
+                        type="text"
+                        name="pharmacy_address"
+                        placeholder="e.g. 123 Main St"
+                      />
+                    </div>
+
+                    <div class="form-group">
+                      <label>Location</label>
+                      <input
+                        type="text"
+                        name="pharmacy_location"
+                        placeholder="e.g. Dhaka"
+                      />
+                    </div>
+                  </div>
+
+                  <button type="submit" class="btn primary">Register</button>
+                </form>
+              </div>
+
+              <div class="card">
+                <h3>Login</h3>
+                <form id="login-form">
+                  <div class="form-group">
+                    <label>Email</label>
+                    <input
+                      type="email"
+                      name="email"
+                      placeholder="e.g. john@example.com"
+                      required
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Password</label>
+                    <input
+                      type="password"
+                      name="password"
+                      placeholder="********"
+                      required
+                    />
+                  </div>
+
+                  <button type="submit" class="btn primary">Login</button>
+                </form>
+              </div>
+
+              <div class="card">
+                <h3>Reset Password</h3>
+                <form id="reset-password-form">
+                  <div class="form-group">
+                    <label>New Password</label>
+                    <input
+                      type="password"
+                      name="new_password"
+                      placeholder="********"
+                      required
+                    />
+                  </div>
+                  <button type="submit" class="btn primary">
+                    Reset Password
+                  </button>
+                </form>
+              </div>
+            </div>
+            <!-- /AUTH TAB -->
+
+            <!-- PHARMACY TAB -->
+            <div class="tab-content" id="pharmacy">
+              <h2>Pharmacy Management</h2>
+
+              <div class="card">
+                <h3>Create Pharmacy</h3>
+                <form id="create-pharmacy-form">
+                  <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" name="name" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Address</label>
+                    <input type="text" name="address" />
+                  </div>
+                  <div class="form-group">
+                    <label>Location</label>
+                    <input type="text" name="location" />
+                  </div>
+                  <button type="submit" class="btn primary">Create</button>
+                </form>
+              </div>
+
+              <div class="card">
+                <h3>Update Pharmacy</h3>
+                <form id="update-pharmacy-form">
+                  <div class="form-group">
+                    <label>Pharmacy ID</label>
+                    <input type="number" name="id" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Name</label>
+                    <input type="text" name="name" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Address</label>
+                    <input type="text" name="address" />
+                  </div>
+                  <div class="form-group">
+                    <label>Location</label>
+                    <input type="text" name="location" />
+                  </div>
+                  <button type="submit" class="btn primary">Update</button>
+                </form>
+              </div>
+
+              <div class="card">
+                <h3>List Pharmacies</h3>
+                <button id="list-pharmacies-btn" class="btn secondary">
+                  Fetch All
+                </button>
+              </div>
+            </div>
+            <!-- /PHARMACY TAB -->
+
+            <!-- MEDICINE TAB -->
+            <div class="tab-content" id="medicine">
+              <h2>Medicine Search</h2>
+
+              <div class="card">
+                <h3>Search</h3>
+                <form id="search-medicine-form">
+                  <div class="form-group">
+                    <label>Query</label>
+                    <input
+                      type="text"
+                      name="query"
+                      placeholder="Brand or Generic name"
+                    />
+                  </div>
+                  <button type="submit" class="btn primary">Search</button>
+                </form>
+              </div>
+            </div>
+            <!-- /MEDICINE TAB -->
+
+            <!-- INVENTORY TAB -->
+            <div class="tab-content" id="inventory">
+              <h2>Inventory</h2>
+
+              <div class="card">
+                <h3>Add Inventory</h3>
+                <form id="add-inventory-form">
+                  <div class="form-group">
+                    <label>Pharmacy ID</label>
+                    <input type="number" name="pharmacy_id" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Medicine ID</label>
+                    <input type="number" name="medicine_id" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Quantity</label>
+                    <input type="number" name="quantity" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Cost Price</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      name="cost_price"
+                      required
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>Sale Price</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      name="sale_price"
+                      required
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>Expiry Date</label>
+                    <input type="date" name="expiry_date" />
+                  </div>
+                  <button type="submit" class="btn primary">Add Item</button>
+                </form>
+              </div>
+
+              <div class="card">
+                <h3>Update Inventory</h3>
+                <form id="update-inventory-form">
+                  <div class="form-group">
+                    <label>Inventory ID</label>
+                    <input type="number" name="id" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Pharmacy ID</label>
+                    <input type="number" name="pharmacy_id" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Medicine ID</label>
+                    <input type="number" name="medicine_id" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Quantity</label>
+                    <input type="number" name="quantity" required />
+                  </div>
+                  <div class="form-group">
+                    <label>Cost Price</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      name="cost_price"
+                      required
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>Sale Price</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      name="sale_price"
+                      required
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label>Expiry Date</label>
+                    <input type="date" name="expiry_date" />
+                  </div>
+                  <button type="submit" class="btn primary">Update Item</button>
+                </form>
+              </div>
+
+              <div class="card">
+                <h3>Update Stock</h3>
+                <form id="update-stock-form">
+                  <div class="form-group">
+                    <label>Inventory ID</label>
+                    <input type="number" name="id" required />
+                  </div>
+                  <div class="form-group">
+                    <label>New Quantity</label>
+                    <input type="number" name="quantity" required />
+                  </div>
+                  <button type="submit" class="btn primary">Update Stock</button>
+                </form>
+              </div>
+
+              <div class="card">
+                <h3>Expiry Alerts</h3>
+                <form id="expiry-alert-form">
+                  <div class="form-group">
+                    <label>Days Threshold</label>
+                    <input type="number" name="days" value="30" />
+                  </div>
+                  <button type="submit" class="btn secondary">
+                    Check Alerts
+                  </button>
+                </form>
+              </div>
+            </div>
+            <!-- /INVENTORY TAB -->
+
+            <!-- SALES TAB -->
+            <div class="tab-content" id="sales">
+              <h2>Sales</h2>
+
+              <div class="card">
+                <h3>Create Sale</h3>
+                <form id="create-sale-form">
+                  <div class="form-group">
+                    <label>Pharmacy ID</label>
+                    <input type="number" name="pharmacy_id" required />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Discount</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      name="discount"
+                      value="0"
+                    />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Paid Amount</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      name="paid_amount"
+                      required
+                    />
+                  </div>
+
+                  <h4>Items</h4>
+                  <div id="sale-items-container">
+                    <div class="sale-item-row">
+                      <input
+                        type="number"
+                        placeholder="Med ID"
+                        class="item-med-id"
+                        required
+                      />
+                      <input
+                        type="number"
+                        placeholder="Qty"
+                        class="item-qty"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    id="add-sale-item-btn"
+                    class="btn small"
+                  >
+                    Add Another Item
+                  </button>
+
+                  <br /><br />
+
+                  <button type="submit" class="btn primary">
+                    Process Sale
+                  </button>
+                </form>
+              </div>
+            </div>
+            <!-- /SALES TAB -->
+
+            <!-- REPORTS TAB -->
+            <div class="tab-content" id="reports">
+              <h2>Reports</h2>
+
+              <div class="card">
+                <h3>Daily Sales</h3>
+                <form id="daily-sales-form">
+                  <div class="form-group">
+                    <label>Pharmacy ID (Optional)</label>
+                    <input type="number" name="pharmacy_id" />
+                  </div>
+                  <button type="submit" class="btn secondary">Get Report</button>
+                </form>
+              </div>
+
+              <div class="card">
+                <h3>Monthly Sales</h3>
+                <form id="monthly-sales-form">
+                  <div class="form-group">
+                    <label>Pharmacy ID (Optional)</label>
+                    <input type="number" name="pharmacy_id" />
+                  </div>
+                  <button type="submit" class="btn secondary">Get Report</button>
+                </form>
+              </div>
+            </div>
+            <!-- /REPORTS TAB -->
+          </section>
+
+          <!-- Right Panel: Results -->
+          <section class="results-panel">
+            <div class="results-header">
+              <h2>Response Output</h2>
+              <button id="clear-logs" class="btn small">Clear</button>
+            </div>
+
+            <div id="logs-container" class="logs-container">
+              <div class="log-entry info">Ready to test API endpoints...</div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

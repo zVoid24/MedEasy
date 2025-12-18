@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -45,8 +44,11 @@ func Load() Config {
 			name = "medeasy"
 		}
 		password := os.Getenv("PASSWORD")
+		if password == "" {
+			password = "8135"
+		}
 
-		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, password, host, dbPort, name)
+		dsn = "postgres://postgres:8135@localhost:5432/medeasy?sslmode=disable"
 	}
 
 	// Validate that port is numeric.

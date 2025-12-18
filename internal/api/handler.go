@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,6 +70,7 @@ func (h *Handler) Router() http.Handler {
 			r.Post("/", h.addInventory)
 			r.Put("/{id}", h.updateInventory)
 			r.Post("/{id}/stock", h.updateStock)
+			r.Get("/search", h.searchInventoryMedicines)
 			r.Get("/expiry-alert", h.expiryAlerts)
 		})
 
@@ -79,6 +81,7 @@ func (h *Handler) Router() http.Handler {
 		pr.Route("/reports", func(r chi.Router) {
 			r.Get("/sales/daily", h.dailySales)
 			r.Get("/sales/monthly", h.monthlySales)
+			r.Get("/sales", h.salesReport)
 		})
 	})
 
@@ -388,6 +391,49 @@ func (h *Handler) searchMedicines(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, medicines)
 }
 
+type inventorySearchResult struct {
+	InventoryID  int64   `db:"inventory_id" json:"inventory_id"`
+	MedicineID   int64   `db:"medicine_id" json:"medicine_id"`
+	BrandName    string  `db:"brand_name" json:"brand_name"`
+	GenericName  string  `db:"generic_name" json:"generic_name"`
+	Manufacturer string  `db:"manufacturer" json:"manufacturer"`
+	Type         string  `db:"type" json:"type"`
+	Quantity     int64   `db:"quantity" json:"quantity"`
+	UnitCost     float64 `db:"cost_price" json:"unit_cost"`
+	UnitPrice    float64 `db:"sale_price" json:"unit_price"`
+	TotalCost    float64 `db:"total_cost" json:"total_cost"`
+}
+
+func (h *Handler) searchInventoryMedicines(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, "owner", "employee") {
+		return
+	}
+	pharmacyID, err := strconv.ParseInt(r.URL.Query().Get("pharmacy_id"), 10, 64)
+	if err != nil || pharmacyID <= 0 {
+		respondError(w, http.StatusBadRequest, "valid pharmacy_id is required")
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("query"))
+	args := []any{pharmacyID}
+	sqlQuery := `SELECT i.id AS inventory_id, i.medicine_id, i.quantity, i.cost_price, i.sale_price, m.brand_name, m.generic_name, m.manufacturer, m.type, (i.cost_price * i.quantity) AS total_cost
+                FROM inventory i
+                JOIN medicines m ON m.id = i.medicine_id
+                WHERE i.pharmacy_id = $1 AND i.quantity > 0`
+	if query != "" {
+		like := "%" + query + "%"
+		args = append(args, like)
+		sqlQuery += " AND (m.brand_name ILIKE $2 OR m.generic_name ILIKE $2)"
+	}
+	sqlQuery += " ORDER BY m.brand_name LIMIT 25"
+
+	var results []inventorySearchResult
+	if err := h.db.Select(&results, sqlQuery, args...); err != nil {
+		respondError(w, http.StatusInternalServerError, "unable to search inventory")
+		return
+	}
+	respondJSON(w, http.StatusOK, results)
+}
+
 // Inventory handlers
 
 type inventoryRequest struct {
@@ -412,13 +458,19 @@ func (h *Handler) addInventory(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "pharmacy_id, medicine_id, quantity, cost_price and sale_price are required")
 		return
 	}
+	unitCost := req.CostPrice / float64(req.Quantity)
+	unitSale := req.SalePrice / float64(req.Quantity)
 	_, err := h.db.Exec(`INSERT INTO inventory (pharmacy_id, medicine_id, quantity, cost_price, sale_price, expiry_date) VALUES ($1, $2, $3, $4, $5, $6)`,
-		req.PharmacyID, req.MedicineID, req.Quantity, req.CostPrice, req.SalePrice, nullIfEmpty(req.ExpiryDate))
+		req.PharmacyID, req.MedicineID, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to add inventory")
 		return
 	}
-	respondJSON(w, http.StatusCreated, map[string]string{"status": "inventory added"})
+	respondJSON(w, http.StatusCreated, map[string]any{
+		"status":          "inventory added",
+		"unit_cost_price": unitCost,
+		"unit_sale_price": unitSale,
+	})
 }
 
 func (h *Handler) updateInventory(w http.ResponseWriter, r *http.Request) {
@@ -439,13 +491,23 @@ func (h *Handler) updateInventory(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "quantity, cost_price and sale_price are required")
 		return
 	}
+	if req.Quantity == 0 {
+		respondError(w, http.StatusBadRequest, "quantity must be greater than zero")
+		return
+	}
+	unitCost := req.CostPrice / float64(req.Quantity)
+	unitSale := req.SalePrice / float64(req.Quantity)
 	_, err = h.db.Exec(`UPDATE inventory SET pharmacy_id = $1, medicine_id = $2, quantity = $3, cost_price = $4, sale_price = $5, expiry_date = $6, updated_at = CURRENT_TIMESTAMP WHERE id = $7`,
-		req.PharmacyID, req.MedicineID, req.Quantity, req.CostPrice, req.SalePrice, nullIfEmpty(req.ExpiryDate), id)
+		req.PharmacyID, req.MedicineID, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate), id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to update inventory")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	respondJSON(w, http.StatusOK, map[string]any{
+		"status":          "updated",
+		"unit_cost_price": unitCost,
+		"unit_sale_price": unitSale,
+	})
 }
 
 func (h *Handler) updateStock(w http.ResponseWriter, r *http.Request) {
@@ -482,7 +544,10 @@ func (h *Handler) expiryAlerts(w http.ResponseWriter, r *http.Request) {
 		days = 30
 	}
 	var items []domain.InventoryItem
-	if err := h.db.Select(&items, `SELECT id, pharmacy_id, medicine_id, quantity, cost_price, sale_price, expiry_date, created_at, updated_at FROM inventory WHERE expiry_date IS NOT NULL AND expiry_date <= (CURRENT_DATE + ($1 || ' day')::interval) ORDER BY expiry_date ASC`, days); err != nil {
+	if err := h.db.Select(&items, `SELECT id, pharmacy_id, medicine_id, quantity, cost_price, sale_price, expiry_date, created_at, updated_at FROM inventory
+                WHERE expiry_date IS NOT NULL
+                AND expiry_date <= (CURRENT_DATE + ($1 * INTERVAL '1 day'))
+                ORDER BY expiry_date ASC`, days); err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to fetch alerts")
 		return
 	}
@@ -639,6 +704,110 @@ func (h *Handler) monthlySales(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"revenue": revenue, "sales_count": count})
+}
+
+type saleItemDetail struct {
+	SaleID     int64   `db:"sale_id" json:"sale_id"`
+	MedicineID int64   `db:"medicine_id" json:"medicine_id"`
+	BrandName  string  `db:"brand_name" json:"brand_name"`
+	Quantity   int64   `db:"quantity" json:"quantity"`
+	UnitPrice  float64 `db:"unit_price" json:"unit_price"`
+	Subtotal   float64 `db:"subtotal" json:"subtotal"`
+}
+
+type saleReportEntry struct {
+	domain.Sale
+	Items []saleItemDetail `json:"items"`
+}
+
+func (h *Handler) salesReport(w http.ResponseWriter, r *http.Request) {
+	if !h.requireRole(w, r, "owner") {
+		return
+	}
+
+	var (
+		args    []any
+		clauses []string
+	)
+
+	pharmacyIDStr := strings.TrimSpace(r.URL.Query().Get("pharmacy_id"))
+	if pharmacyIDStr != "" {
+		pharmacyID, err := strconv.ParseInt(pharmacyIDStr, 10, 64)
+		if err != nil || pharmacyID <= 0 {
+			respondError(w, http.StatusBadRequest, "invalid pharmacy_id")
+			return
+		}
+		args = append(args, pharmacyID)
+		clauses = append(clauses, fmt.Sprintf("pharmacy_id = $%d", len(args)))
+	}
+
+	startDate := strings.TrimSpace(r.URL.Query().Get("start_date"))
+	if startDate != "" {
+		if _, err := time.Parse("2006-01-02", startDate); err != nil {
+			respondError(w, http.StatusBadRequest, "start_date must be in YYYY-MM-DD format")
+			return
+		}
+		args = append(args, startDate)
+		clauses = append(clauses, fmt.Sprintf("DATE(created_at) >= $%d", len(args)))
+	}
+
+	endDate := strings.TrimSpace(r.URL.Query().Get("end_date"))
+	if endDate != "" {
+		if _, err := time.Parse("2006-01-02", endDate); err != nil {
+			respondError(w, http.StatusBadRequest, "end_date must be in YYYY-MM-DD format")
+			return
+		}
+		args = append(args, endDate)
+		clauses = append(clauses, fmt.Sprintf("DATE(created_at) <= $%d", len(args)))
+	}
+
+	query := `SELECT id, pharmacy_id, user_id, total_amount, discount, paid_amount, due_amount, created_at FROM sales`
+	if len(clauses) > 0 {
+		query += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	query += " ORDER BY created_at DESC"
+
+	var sales []domain.Sale
+	if err := h.db.Select(&sales, query, args...); err != nil {
+		respondError(w, http.StatusInternalServerError, "unable to fetch sales report")
+		return
+	}
+	if len(sales) == 0 {
+		respondJSON(w, http.StatusOK, []saleReportEntry{})
+		return
+	}
+
+	ids := make([]int64, len(sales))
+	for i, sale := range sales {
+		ids[i] = sale.ID
+	}
+
+	itemsQuery, itemsArgs, err := sqlx.In(`SELECT si.sale_id, si.medicine_id, si.quantity, si.unit_price, si.subtotal, m.brand_name
+                FROM sale_items si
+                JOIN medicines m ON m.id = si.medicine_id
+                WHERE si.sale_id IN (?)`, ids)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "unable to prepare sale items query")
+		return
+	}
+	itemsQuery = h.db.Rebind(itemsQuery)
+
+	var rows []saleItemDetail
+	if err := h.db.Select(&rows, itemsQuery, itemsArgs...); err != nil {
+		respondError(w, http.StatusInternalServerError, "unable to load sale items")
+		return
+	}
+	itemsBySale := make(map[int64][]saleItemDetail)
+	for _, row := range rows {
+		itemsBySale[row.SaleID] = append(itemsBySale[row.SaleID], row)
+	}
+
+	report := make([]saleReportEntry, len(sales))
+	for i, sale := range sales {
+		report[i] = saleReportEntry{Sale: sale, Items: itemsBySale[sale.ID]}
+	}
+
+	respondJSON(w, http.StatusOK, report)
 }
 
 // Helpers

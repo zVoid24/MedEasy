@@ -10,24 +10,23 @@ import (
 func Run(db *sqlx.DB) {
 	schema := []string{
 		`CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             username TEXT NOT NULL,
             email TEXT NOT NULL UNIQUE,
             password TEXT NOT NULL,
             role TEXT NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );`,
 		`CREATE TABLE IF NOT EXISTS pharmacies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             address TEXT,
             location TEXT,
-            owner_id INTEGER,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(owner_id) REFERENCES users(id)
+            owner_id INTEGER REFERENCES users(id),
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );`,
 		`CREATE TABLE IF NOT EXISTS medicines (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             brand_id INTEGER,
             brand_name TEXT NOT NULL,
             type TEXT,
@@ -36,39 +35,33 @@ func Run(db *sqlx.DB) {
             UNIQUE(brand_id)
         );`,
 		`CREATE TABLE IF NOT EXISTS inventory (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pharmacy_id INTEGER NOT NULL,
-            medicine_id INTEGER NOT NULL,
+            id SERIAL PRIMARY KEY,
+            pharmacy_id INTEGER NOT NULL REFERENCES pharmacies(id),
+            medicine_id INTEGER NOT NULL REFERENCES medicines(id),
             quantity INTEGER NOT NULL,
-            cost_price REAL NOT NULL,
-            sale_price REAL NOT NULL,
-            expiry_date TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(pharmacy_id) REFERENCES pharmacies(id),
-            FOREIGN KEY(medicine_id) REFERENCES medicines(id)
+            cost_price DOUBLE PRECISION NOT NULL,
+            sale_price DOUBLE PRECISION NOT NULL,
+            expiry_date DATE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         );`,
 		`CREATE TABLE IF NOT EXISTS sales (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pharmacy_id INTEGER NOT NULL,
-            user_id INTEGER,
-            total_amount REAL NOT NULL,
-            discount REAL DEFAULT 0,
-            paid_amount REAL DEFAULT 0,
-            due_amount REAL DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(pharmacy_id) REFERENCES pharmacies(id),
-            FOREIGN KEY(user_id) REFERENCES users(id)
+            id SERIAL PRIMARY KEY,
+            pharmacy_id INTEGER NOT NULL REFERENCES pharmacies(id),
+            user_id INTEGER REFERENCES users(id),
+            total_amount DOUBLE PRECISION NOT NULL,
+            discount DOUBLE PRECISION DEFAULT 0,
+            paid_amount DOUBLE PRECISION DEFAULT 0,
+            due_amount DOUBLE PRECISION DEFAULT 0,
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );`,
 		`CREATE TABLE IF NOT EXISTS sale_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sale_id INTEGER NOT NULL,
-            medicine_id INTEGER NOT NULL,
+            id SERIAL PRIMARY KEY,
+            sale_id INTEGER NOT NULL REFERENCES sales(id),
+            medicine_id INTEGER NOT NULL REFERENCES medicines(id),
             quantity INTEGER NOT NULL,
-            unit_price REAL NOT NULL,
-            subtotal REAL NOT NULL,
-            FOREIGN KEY(sale_id) REFERENCES sales(id),
-            FOREIGN KEY(medicine_id) REFERENCES medicines(id)
+            unit_price DOUBLE PRECISION NOT NULL,
+            subtotal DOUBLE PRECISION NOT NULL
         );`,
 	}
 

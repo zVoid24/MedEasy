@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -25,10 +26,27 @@ func Load() Config {
 		port = "8080"
 	}
 
-	// Allow overriding database path, default to local SQLite file.
 	dsn := os.Getenv("DATABASE_DSN")
 	if dsn == "" {
-		dsn = "file:medeasy.db?_busy_timeout=5000&_fk=1"
+		host := os.Getenv("HOST")
+		if host == "" {
+			host = "localhost"
+		}
+		user := os.Getenv("USER")
+		if user == "" {
+			user = "postgres"
+		}
+		dbPort := os.Getenv("PORT")
+		if dbPort == "" {
+			dbPort = "5432"
+		}
+		name := os.Getenv("NAME")
+		if name == "" {
+			name = "medeasy"
+		}
+		password := os.Getenv("PASSWORD")
+
+		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, password, host, dbPort, name)
 	}
 
 	// Validate that port is numeric.

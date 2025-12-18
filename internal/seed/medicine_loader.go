@@ -31,7 +31,7 @@ func LoadMedicines(db *sqlx.DB, csvPath string) {
 		log.Printf("unable to start medicine transaction: %v", err)
 		return
 	}
-	stmt, err := tx.Preparex(`INSERT OR IGNORE INTO medicines (brand_id, brand_name, type, generic_name, manufacturer) VALUES (?, ?, ?, ?, ?)`)
+	stmt, err := tx.Preparex(`INSERT INTO medicines (brand_id, brand_name, type, generic_name, manufacturer) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (brand_id) DO NOTHING`)
 	if err != nil {
 		log.Printf("unable to prepare medicine insert: %v", err)
 		_ = tx.Rollback()

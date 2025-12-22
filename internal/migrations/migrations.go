@@ -10,13 +10,14 @@ import (
 func Run(db *sqlx.DB) {
 	schema := []string{
 		`CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );`,
+			id SERIAL PRIMARY KEY,
+			username TEXT NOT NULL,
+			email TEXT NOT NULL UNIQUE,
+			password TEXT NOT NULL,
+			role TEXT NOT NULL,
+			pharmacy_id INTEGER,
+			created_at TIMESTAMPTZ DEFAULT NOW()
+		);`,
 		`CREATE TABLE IF NOT EXISTS pharmacies (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
@@ -56,13 +57,14 @@ func Run(db *sqlx.DB) {
             created_at TIMESTAMPTZ DEFAULT NOW()
         );`,
 		`CREATE TABLE IF NOT EXISTS sale_items (
-            id SERIAL PRIMARY KEY,
-            sale_id INTEGER NOT NULL REFERENCES sales(id),
-            medicine_id INTEGER NOT NULL REFERENCES medicines(id),
-            quantity INTEGER NOT NULL,
-            unit_price DOUBLE PRECISION NOT NULL,
-            subtotal DOUBLE PRECISION NOT NULL
-        );`,
+			id SERIAL PRIMARY KEY,
+			sale_id INTEGER NOT NULL REFERENCES sales(id),
+			medicine_id INTEGER NOT NULL REFERENCES medicines(id),
+			inventory_id INTEGER REFERENCES inventory(id),
+			quantity INTEGER NOT NULL,
+			unit_price DOUBLE PRECISION NOT NULL,
+			subtotal DOUBLE PRECISION NOT NULL
+		);`,
 	}
 
 	for _, stmt := range schema {

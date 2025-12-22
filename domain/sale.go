@@ -12,10 +12,11 @@ type Sale struct {
 }
 
 type SaleItem struct {
-	ID         int64   `db:"id" json:"id"`
-	SaleID     int64   `db:"sale_id" json:"sale_id"`
-	MedicineID int64   `db:"medicine_id" json:"medicine_id"`
-	Quantity   int64   `db:"quantity" json:"quantity"`
-	UnitPrice  float64 `db:"unit_price" json:"unit_price"`
-	Subtotal   float64 `db:"subtotal" json:"subtotal"`
+	ID          int64   `db:"id" json:"id"`
+	SaleID      int64   `db:"sale_id" json:"sale_id"`
+	MedicineID  int64   `db:"medicine_id" json:"medicine_id"`
+	InventoryID int64   `db:"inventory_id" json:"inventory_id"`
+	Quantity    int64   `db:"quantity" json:"quantity"`
+	UnitPrice   float64 `db:"unit_price" json:"unit_price"`
+	Subtotal    float64 `db:"subtotal" json:"subtotal"`
 }

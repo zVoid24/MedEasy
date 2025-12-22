@@ -23,8 +23,9 @@ import (
 type ctxKey string
 
 const (
-	ctxUserID ctxKey = "userID"
-	ctxRole   ctxKey = "role"
+	ctxUserID     ctxKey = "userID"
+	ctxRole       ctxKey = "role"
+	ctxPharmacyID ctxKey = "pharmacyID"
 )
 
 // Handler bundles dependencies for HTTP handlers.
@@ -95,15 +96,17 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 // Authentication helpers
 
 type authClaims struct {
-	UserID int64  `json:"user_id"`
-	Role   string `json:"role"`
+	UserID     int64  `json:"user_id"`
+	Role       string `json:"role"`
+	PharmacyID int64  `json:"pharmacy_id"`
 	jwt.RegisteredClaims
 }
 
-func (h *Handler) generateToken(userID int64, role string) (string, error) {
+func (h *Handler) generateToken(userID int64, role string, pharmacyID int64) (string, error) {
 	claims := authClaims{
-		UserID: userID,
-		Role:   role,
+		UserID:     userID,
+		Role:       role,
+		PharmacyID: pharmacyID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -138,6 +141,11 @@ func (h *Handler) authMiddleware(next http.Handler) http.Handler {
 		}
 		ctx := context.WithValue(r.Context(), ctxUserID, claims.UserID)
 		ctx = context.WithValue(ctx, ctxRole, claims.Role)
+		if claims.PharmacyID <= 0 {
+			respondError(w, http.StatusForbidden, "user is not linked to a pharmacy")
+			return
+		}
+		ctx = context.WithValue(ctx, ctxPharmacyID, claims.PharmacyID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -158,6 +166,15 @@ func (h *Handler) requireRole(w http.ResponseWriter, r *http.Request, allowed ..
 	return false
 }
 
+func pharmacyIDFromContext(r *http.Request) int64 {
+	if val := r.Context().Value(ctxPharmacyID); val != nil {
+		if id, ok := val.(int64); ok {
+			return id
+		}
+	}
+	return 0
+}
+
 // Auth Handlers
 
 type registerRequest struct {
@@ -165,6 +182,7 @@ type registerRequest struct {
 	Email            string `json:"email"`
 	Password         string `json:"password"`
 	Role             string `json:"role"`
+	PharmacyID       int64  `json:"pharmacy_id,omitempty"`
 	PharmacyName     string `json:"pharmacy_name,omitempty"`
 	PharmacyAddress  string `json:"pharmacy_address,omitempty"`
 	PharmacyLocation string `json:"pharmacy_location,omitempty"`
@@ -196,6 +214,10 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "pharmacy_name is required for owners")
 		return
 	}
+	if req.Role == "employee" && req.PharmacyID <= 0 {
+		respondError(w, http.StatusBadRequest, "pharmacy_id is required for employees")
+		return
+	}
 
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -209,8 +231,25 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userID int64
-	err = tx.QueryRowx(`INSERT INTO users (username, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id`, req.Username, strings.ToLower(req.Email), hashed, req.Role).Scan(&userID)
+	if req.Role == "employee" {
+		var exists bool
+		if err := tx.Get(&exists, `SELECT EXISTS(SELECT 1 FROM pharmacies WHERE id = $1)`, req.PharmacyID); err != nil || !exists {
+			_ = tx.Rollback()
+			respondError(w, http.StatusBadRequest, "invalid pharmacy_id for employee")
+			return
+		}
+	}
+
+	var (
+		userID           int64
+		assignedPharmacy int64
+	)
+	pharmacyIDValue := sql.NullInt64{}
+	if req.Role == "employee" {
+		pharmacyIDValue = sql.NullInt64{Int64: req.PharmacyID, Valid: true}
+	}
+
+	err = tx.QueryRowx(`INSERT INTO users (username, email, password, role, pharmacy_id) VALUES ($1, $2, $3, $4, $5) RETURNING id`, req.Username, strings.ToLower(req.Email), hashed, req.Role, pharmacyIDValue).Scan(&userID)
 	if err != nil {
 		_ = tx.Rollback()
 		respondError(w, http.StatusConflict, "email already exists")
@@ -230,6 +269,12 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusInternalServerError, "unable to create pharmacy for owner")
 			return
 		}
+		if _, err := tx.Exec(`UPDATE users SET pharmacy_id = $1 WHERE id = $2`, pharmacyID, userID); err != nil {
+			_ = tx.Rollback()
+			respondError(w, http.StatusInternalServerError, "unable to link owner to pharmacy")
+			return
+		}
+		assignedPharmacy = pharmacyID
 		pharmacy = &domain.Pharmacy{
 			ID:        pharmacyID,
 			Name:      req.PharmacyName,
@@ -238,6 +283,8 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 			OwnerID:   &userID,
 			CreatedAt: createdAt,
 		}
+	} else {
+		assignedPharmacy = req.PharmacyID
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -245,13 +292,13 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.generateToken(userID, req.Role)
+	token, err := h.generateToken(userID, req.Role, assignedPharmacy)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to generate token")
 		return
 	}
 
-	respondJSON(w, http.StatusCreated, authResponse{Token: token, User: domain.User{ID: int(userID), Username: req.Username, Email: strings.ToLower(req.Email), Role: req.Role}, Pharmacy: pharmacy})
+	respondJSON(w, http.StatusCreated, authResponse{Token: token, User: domain.User{ID: int(userID), Username: req.Username, Email: strings.ToLower(req.Email), Role: req.Role, PharmacyID: &assignedPharmacy}, Pharmacy: pharmacy})
 }
 
 type loginRequest struct {
@@ -267,7 +314,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user domain.User
-	err := h.db.Get(&user, `SELECT id, username, email, password, role FROM users WHERE email = $1`, strings.ToLower(req.Email))
+	err := h.db.Get(&user, `SELECT id, username, email, password, role, pharmacy_id FROM users WHERE email = $1`, strings.ToLower(req.Email))
 	if err != nil {
 		respondError(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -278,7 +325,12 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.generateToken(int64(user.ID), user.Role)
+	if user.PharmacyID == nil || *user.PharmacyID == 0 {
+		respondError(w, http.StatusForbidden, "user is not linked to a pharmacy")
+		return
+	}
+
+	token, err := h.generateToken(int64(user.ID), user.Role, *user.PharmacyID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to generate token")
 		return
@@ -408,9 +460,9 @@ func (h *Handler) searchInventoryMedicines(w http.ResponseWriter, r *http.Reques
 	if !h.requireRole(w, r, "owner", "employee") {
 		return
 	}
-	pharmacyID, err := strconv.ParseInt(r.URL.Query().Get("pharmacy_id"), 10, 64)
-	if err != nil || pharmacyID <= 0 {
-		respondError(w, http.StatusBadRequest, "valid pharmacy_id is required")
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
 		return
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("query"))
@@ -449,19 +501,24 @@ func (h *Handler) addInventory(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, "owner", "employee") {
 		return
 	}
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
+		return
+	}
 	var req inventoryRequest
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.PharmacyID == 0 || req.MedicineID == 0 || req.Quantity <= 0 || req.CostPrice <= 0 || req.SalePrice <= 0 {
-		respondError(w, http.StatusBadRequest, "pharmacy_id, medicine_id, quantity, cost_price and sale_price are required")
+	if req.MedicineID == 0 || req.Quantity <= 0 || req.CostPrice <= 0 || req.SalePrice <= 0 {
+		respondError(w, http.StatusBadRequest, "medicine_id, quantity, cost_price and sale_price are required")
 		return
 	}
 	unitCost := req.CostPrice / float64(req.Quantity)
 	unitSale := req.SalePrice / float64(req.Quantity)
 	_, err := h.db.Exec(`INSERT INTO inventory (pharmacy_id, medicine_id, quantity, cost_price, sale_price, expiry_date) VALUES ($1, $2, $3, $4, $5, $6)`,
-		req.PharmacyID, req.MedicineID, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate))
+		pharmacyID, req.MedicineID, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to add inventory")
 		return
@@ -477,9 +534,27 @@ func (h *Handler) updateInventory(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, "owner", "employee") {
 		return
 	}
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
+		return
+	}
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "invalid inventory id")
+		return
+	}
+	var existingPharmacyID int64
+	if err := h.db.Get(&existingPharmacyID, `SELECT pharmacy_id FROM inventory WHERE id = $1`, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "inventory not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "unable to load inventory")
+		return
+	}
+	if existingPharmacyID != pharmacyID {
+		respondError(w, http.StatusForbidden, "inventory does not belong to your pharmacy")
 		return
 	}
 	var req inventoryRequest
@@ -497,8 +572,8 @@ func (h *Handler) updateInventory(w http.ResponseWriter, r *http.Request) {
 	}
 	unitCost := req.CostPrice / float64(req.Quantity)
 	unitSale := req.SalePrice / float64(req.Quantity)
-	_, err = h.db.Exec(`UPDATE inventory SET pharmacy_id = $1, medicine_id = $2, quantity = $3, cost_price = $4, sale_price = $5, expiry_date = $6, updated_at = CURRENT_TIMESTAMP WHERE id = $7`,
-		req.PharmacyID, req.MedicineID, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate), id)
+	_, err = h.db.Exec(`UPDATE inventory SET medicine_id = $1, quantity = $2, cost_price = $3, sale_price = $4, expiry_date = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6`,
+		req.MedicineID, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate), id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to update inventory")
 		return
@@ -514,9 +589,27 @@ func (h *Handler) updateStock(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, "owner", "employee") {
 		return
 	}
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
+		return
+	}
 	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "invalid inventory id")
+		return
+	}
+	var existingPharmacyID int64
+	if err := h.db.Get(&existingPharmacyID, `SELECT pharmacy_id FROM inventory WHERE id = $1`, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondError(w, http.StatusNotFound, "inventory not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "unable to load inventory")
+		return
+	}
+	if existingPharmacyID != pharmacyID {
+		respondError(w, http.StatusForbidden, "inventory does not belong to your pharmacy")
 		return
 	}
 	var payload struct {
@@ -539,6 +632,11 @@ func (h *Handler) updateStock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) expiryAlerts(w http.ResponseWriter, r *http.Request) {
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
+		return
+	}
 	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
 	if days <= 0 {
 		days = 30
@@ -546,8 +644,9 @@ func (h *Handler) expiryAlerts(w http.ResponseWriter, r *http.Request) {
 	var items []domain.InventoryItem
 	if err := h.db.Select(&items, `SELECT id, pharmacy_id, medicine_id, quantity, cost_price, sale_price, expiry_date, created_at, updated_at FROM inventory
                 WHERE expiry_date IS NOT NULL
+                AND pharmacy_id = $2
                 AND expiry_date <= (CURRENT_DATE + ($1 * INTERVAL '1 day'))
-                ORDER BY expiry_date ASC`, days); err != nil {
+                ORDER BY expiry_date ASC`, days, pharmacyID); err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to fetch alerts")
 		return
 	}
@@ -557,12 +656,12 @@ func (h *Handler) expiryAlerts(w http.ResponseWriter, r *http.Request) {
 // Sales handlers
 
 type saleItemRequest struct {
-	MedicineID int64 `json:"medicine_id"`
-	Quantity   int64 `json:"quantity"`
+	InventoryID int64 `json:"inventory_id"`
+	MedicineID  int64 `json:"medicine_id"`
+	Quantity    int64 `json:"quantity"`
 }
 
 type saleRequest struct {
-	PharmacyID int64             `json:"pharmacy_id"`
 	Items      []saleItemRequest `json:"items"`
 	Discount   float64           `json:"discount"`
 	PaidAmount float64           `json:"paid_amount"`
@@ -572,45 +671,60 @@ func (h *Handler) createSale(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, "owner", "employee") {
 		return
 	}
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
+		return
+	}
 	var req saleRequest
 	if err := decodeJSON(r, &req); err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.PharmacyID == 0 || len(req.Items) == 0 {
-		respondError(w, http.StatusBadRequest, "pharmacy_id and at least one item are required")
+	if len(req.Items) == 0 {
+		respondError(w, http.StatusBadRequest, "at least one item is required")
 		return
 	}
 
 	type inventorySnapshot struct {
-		ID        int64   `db:"id"`
-		SalePrice float64 `db:"sale_price"`
-		Quantity  int64   `db:"quantity"`
+		ID         int64   `db:"id"`
+		MedicineID int64   `db:"medicine_id"`
+		SalePrice  float64 `db:"sale_price"`
+		Quantity   int64   `db:"quantity"`
 	}
 
 	snapshots := make(map[int64]inventorySnapshot)
+	remaining := make(map[int64]int64)
 	var total float64
 
 	for _, item := range req.Items {
-		if item.MedicineID == 0 || item.Quantity <= 0 {
-			respondError(w, http.StatusBadRequest, "medicine_id and quantity are required for each item")
+		if item.InventoryID <= 0 || item.Quantity <= 0 {
+			respondError(w, http.StatusBadRequest, "inventory_id and quantity are required for each item")
 			return
 		}
-		var snap inventorySnapshot
-		err := h.db.Get(&snap, `SELECT id, sale_price, quantity FROM inventory WHERE pharmacy_id = $1 AND medicine_id = $2 ORDER BY COALESCE(expiry_date, CURRENT_DATE) ASC LIMIT 1`, req.PharmacyID, item.MedicineID)
-		if errors.Is(err, sql.ErrNoRows) {
-			respondError(w, http.StatusBadRequest, "inventory not found for one or more items")
+		snap, ok := snapshots[item.InventoryID]
+		if !ok {
+			err := h.db.Get(&snap, `SELECT id, medicine_id, sale_price, quantity FROM inventory WHERE id = $1 AND pharmacy_id = $2`, item.InventoryID, pharmacyID)
+			if errors.Is(err, sql.ErrNoRows) {
+				respondError(w, http.StatusBadRequest, "inventory not found for one or more items")
+				return
+			}
+			if err != nil {
+				respondError(w, http.StatusInternalServerError, "unable to fetch inventory")
+				return
+			}
+			snapshots[item.InventoryID] = snap
+			remaining[item.InventoryID] = snap.Quantity
+		}
+		if item.MedicineID != 0 && snap.MedicineID != item.MedicineID {
+			respondError(w, http.StatusBadRequest, "inventory item does not match medicine")
 			return
 		}
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "unable to fetch inventory")
-			return
-		}
-		if snap.Quantity < item.Quantity {
+		if remaining[item.InventoryID] < item.Quantity {
 			respondError(w, http.StatusBadRequest, "insufficient stock for one or more items")
 			return
 		}
-		snapshots[item.MedicineID] = snap
+		remaining[item.InventoryID] -= item.Quantity
 		total += float64(item.Quantity) * snap.SalePrice
 	}
 
@@ -633,23 +747,30 @@ func (h *Handler) createSale(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(ctxUserID).(int64)
 	var saleID int64
 	err = tx.QueryRowx(`INSERT INTO sales (pharmacy_id, user_id, total_amount, discount, paid_amount, due_amount) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		req.PharmacyID, userID, total, req.Discount, req.PaidAmount, due).Scan(&saleID)
+		pharmacyID, userID, total, req.Discount, req.PaidAmount, due).Scan(&saleID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to create sale")
 		return
 	}
 
 	for _, item := range req.Items {
-		snap := snapshots[item.MedicineID]
-		newQty := snap.Quantity - item.Quantity
-		if _, err := tx.Exec(`UPDATE inventory SET quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, newQty, snap.ID); err != nil {
-			respondError(w, http.StatusInternalServerError, "unable to update inventory")
-			return
+		snap := snapshots[item.InventoryID]
+		medicineID := item.MedicineID
+		if medicineID == 0 {
+			medicineID = snap.MedicineID
 		}
 		subtotal := float64(item.Quantity) * snap.SalePrice
-		if _, err := tx.Exec(`INSERT INTO sale_items (sale_id, medicine_id, quantity, unit_price, subtotal) VALUES ($1, $2, $3, $4, $5)`,
-			saleID, item.MedicineID, item.Quantity, snap.SalePrice, subtotal); err != nil {
+		if _, err := tx.Exec(`INSERT INTO sale_items (sale_id, medicine_id, inventory_id, quantity, unit_price, subtotal) VALUES ($1, $2, $3, $4, $5, $6)`,
+			saleID, medicineID, snap.ID, item.Quantity, snap.SalePrice, subtotal); err != nil {
 			respondError(w, http.StatusInternalServerError, "unable to save sale items")
+			return
+		}
+	}
+
+	for inventoryID, snap := range snapshots {
+		newQty := remaining[inventoryID]
+		if _, err := tx.Exec(`UPDATE inventory SET quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, newQty, snap.ID); err != nil {
+			respondError(w, http.StatusInternalServerError, "unable to update inventory")
 			return
 		}
 	}
@@ -671,13 +792,13 @@ func (h *Handler) createSale(w http.ResponseWriter, r *http.Request) {
 
 // Reports
 func (h *Handler) dailySales(w http.ResponseWriter, r *http.Request) {
-	pharmacyID := r.URL.Query().Get("pharmacy_id")
-	query := `SELECT COALESCE(SUM(total_amount - discount),0) AS revenue, COUNT(*) AS count FROM sales WHERE DATE(created_at) = CURRENT_DATE`
-	args := []interface{}{}
-	if pharmacyID != "" {
-		query += " AND pharmacy_id = $1"
-		args = append(args, pharmacyID)
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
+		return
 	}
+	query := `SELECT COALESCE(SUM(total_amount - discount),0) AS revenue, COUNT(*) AS count FROM sales WHERE DATE(created_at) = CURRENT_DATE AND pharmacy_id = $1`
+	args := []interface{}{pharmacyID}
 	var revenue float64
 	var count int64
 	err := h.db.QueryRow(query, args...).Scan(&revenue, &count)
@@ -689,13 +810,13 @@ func (h *Handler) dailySales(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) monthlySales(w http.ResponseWriter, r *http.Request) {
-	pharmacyID := r.URL.Query().Get("pharmacy_id")
-	query := `SELECT COALESCE(SUM(total_amount - discount),0) AS revenue, COUNT(*) AS count FROM sales WHERE DATE(created_at) >= date_trunc('month', CURRENT_DATE)`
-	args := []interface{}{}
-	if pharmacyID != "" {
-		query += " AND pharmacy_id = $1"
-		args = append(args, pharmacyID)
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
+		return
 	}
+	query := `SELECT COALESCE(SUM(total_amount - discount),0) AS revenue, COUNT(*) AS count FROM sales WHERE DATE(created_at) >= date_trunc('month', CURRENT_DATE) AND pharmacy_id = $1`
+	args := []interface{}{pharmacyID}
 	var revenue float64
 	var count int64
 	err := h.db.QueryRow(query, args...).Scan(&revenue, &count)
@@ -707,12 +828,13 @@ func (h *Handler) monthlySales(w http.ResponseWriter, r *http.Request) {
 }
 
 type saleItemDetail struct {
-	SaleID     int64   `db:"sale_id" json:"sale_id"`
-	MedicineID int64   `db:"medicine_id" json:"medicine_id"`
-	BrandName  string  `db:"brand_name" json:"brand_name"`
-	Quantity   int64   `db:"quantity" json:"quantity"`
-	UnitPrice  float64 `db:"unit_price" json:"unit_price"`
-	Subtotal   float64 `db:"subtotal" json:"subtotal"`
+	SaleID      int64   `db:"sale_id" json:"sale_id"`
+	MedicineID  int64   `db:"medicine_id" json:"medicine_id"`
+	InventoryID int64   `db:"inventory_id" json:"inventory_id"`
+	BrandName   string  `db:"brand_name" json:"brand_name"`
+	Quantity    int64   `db:"quantity" json:"quantity"`
+	UnitPrice   float64 `db:"unit_price" json:"unit_price"`
+	Subtotal    float64 `db:"subtotal" json:"subtotal"`
 }
 
 type saleReportEntry struct {
@@ -730,16 +852,13 @@ func (h *Handler) salesReport(w http.ResponseWriter, r *http.Request) {
 		clauses []string
 	)
 
-	pharmacyIDStr := strings.TrimSpace(r.URL.Query().Get("pharmacy_id"))
-	if pharmacyIDStr != "" {
-		pharmacyID, err := strconv.ParseInt(pharmacyIDStr, 10, 64)
-		if err != nil || pharmacyID <= 0 {
-			respondError(w, http.StatusBadRequest, "invalid pharmacy_id")
-			return
-		}
-		args = append(args, pharmacyID)
-		clauses = append(clauses, fmt.Sprintf("pharmacy_id = $%d", len(args)))
+	pharmacyID := pharmacyIDFromContext(r)
+	if pharmacyID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid pharmacy context")
+		return
 	}
+	args = append(args, pharmacyID)
+	clauses = append(clauses, fmt.Sprintf("pharmacy_id = $%d", len(args)))
 
 	startDate := strings.TrimSpace(r.URL.Query().Get("start_date"))
 	if startDate != "" {
@@ -782,7 +901,7 @@ func (h *Handler) salesReport(w http.ResponseWriter, r *http.Request) {
 		ids[i] = sale.ID
 	}
 
-	itemsQuery, itemsArgs, err := sqlx.In(`SELECT si.sale_id, si.medicine_id, si.quantity, si.unit_price, si.subtotal, m.brand_name
+	itemsQuery, itemsArgs, err := sqlx.In(`SELECT si.sale_id, si.medicine_id, si.inventory_id, si.quantity, si.unit_price, si.subtotal, m.brand_name
                 FROM sale_items si
                 JOIN medicines m ON m.id = si.medicine_id
                 WHERE si.sale_id IN (?)`, ids)

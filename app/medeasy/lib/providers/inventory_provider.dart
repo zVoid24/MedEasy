@@ -16,13 +16,17 @@ class InventoryProvider extends ChangeNotifier {
   String? get error => _error;
   List<InventoryItem> get items => _items;
 
+  Future<void> loadInventory({required String token}) async {
+    await search(token: token, query: '');
+  }
+
   Future<void> addInventory({
     required String token,
     required int medicineId,
     required int quantity,
     required double costPrice,
     required double salePrice,
-    required String expiryDate,
+    String? expiryDate,
   }) async {
     _saving = true;
     notifyListeners();
@@ -33,7 +37,7 @@ class InventoryProvider extends ChangeNotifier {
         quantity: quantity,
         costPrice: costPrice,
         salePrice: salePrice,
-        expiryDate: expiryDate,
+        expiryDate: expiryDate ?? '',
       );
       _error = null;
     } catch (e) {
@@ -44,10 +48,7 @@ class InventoryProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> search({
-    required String token,
-    String query = '',
-  }) async {
+  Future<void> search({required String token, String query = ''}) async {
     _loading = true;
     notifyListeners();
     try {

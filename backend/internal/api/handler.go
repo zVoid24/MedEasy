@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -643,6 +644,13 @@ func (h *Handler) updateStock(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "stock updated"})
 }
 
+type expiryAlertResponse struct {
+	InventoryID int64  `db:"id" json:"inventory_id"`
+	BrandName   string `db:"brand_name" json:"brand_name"`
+	Quantity    int64  `db:"quantity" json:"quantity"`
+	ExpiryDate  string `db:"expiry_date" json:"expiry_date"`
+}
+
 func (h *Handler) expiryAlerts(w http.ResponseWriter, r *http.Request) {
 	pharmacyID := pharmacyIDFromContext(r)
 	if pharmacyID <= 0 {
@@ -653,12 +661,17 @@ func (h *Handler) expiryAlerts(w http.ResponseWriter, r *http.Request) {
 	if days <= 0 {
 		days = 30
 	}
-	var items []domain.InventoryItem
-	if err := h.db.Select(&items, `SELECT id, pharmacy_id, medicine_id, quantity, cost_price, sale_price, expiry_date, created_at, updated_at FROM inventory
-                WHERE expiry_date IS NOT NULL
-                AND pharmacy_id = $2
-                AND expiry_date <= (CURRENT_DATE + ($1 * INTERVAL '1 day'))
-                ORDER BY expiry_date ASC`, days, pharmacyID); err != nil {
+	var items []expiryAlertResponse
+	query := `SELECT i.id, m.brand_name, i.quantity, i.expiry_date 
+              FROM inventory i
+              JOIN medicines m ON m.id = i.medicine_id
+              WHERE i.pharmacy_id = $1 
+              AND i.quantity > 0
+              AND i.expiry_date IS NOT NULL
+              AND i.expiry_date <= (CURRENT_DATE + ($2 * INTERVAL '1 day'))
+              ORDER BY i.expiry_date ASC`
+
+	if err := h.db.Select(&items, query, pharmacyID, days); err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to fetch alerts")
 		return
 	}
@@ -674,114 +687,114 @@ type saleItemRequest struct {
 }
 
 type saleRequest struct {
-	Items      []saleItemRequest `json:"items"`
-	Discount   float64           `json:"discount"`
-	PaidAmount float64           `json:"paid_amount"`
+	Items           []saleItemRequest `json:"items"`
+	DiscountPercent float64           `json:"discount_percent"`
+	PaidAmount      float64           `json:"paid_amount"`
+	RoundOff        float64           `json:"round_off"`
 }
 
 func (h *Handler) createSale(w http.ResponseWriter, r *http.Request) {
 	if !h.requireRole(w, r, "owner", "employee") {
 		return
 	}
-	pharmacyID := pharmacyIDFromContext(r)
-	if pharmacyID <= 0 {
-		respondError(w, http.StatusForbidden, "invalid pharmacy context")
-		return
-	}
+
 	var req saleRequest
-	if err := decodeJSON(r, &req); err != nil {
-		respondError(w, http.StatusBadRequest, err.Error())
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
 	if len(req.Items) == 0 {
-		respondError(w, http.StatusBadRequest, "at least one item is required")
+		respondError(w, http.StatusBadRequest, "no items in sale")
 		return
 	}
 
-	type inventorySnapshot struct {
-		ID         int64   `db:"id"`
-		MedicineID int64   `db:"medicine_id"`
-		SalePrice  float64 `db:"sale_price"`
-		Quantity   int64   `db:"quantity"`
-	}
-
-	snapshots := make(map[int64]inventorySnapshot)
-	remaining := make(map[int64]int64)
-	var total float64
-
-	for _, item := range req.Items {
-		if item.InventoryID <= 0 || item.Quantity <= 0 {
-			respondError(w, http.StatusBadRequest, "inventory_id and quantity are required for each item")
-			return
-		}
-		snap, ok := snapshots[item.InventoryID]
-		if !ok {
-			err := h.db.Get(&snap, `SELECT id, medicine_id, sale_price, quantity FROM inventory WHERE id = $1 AND pharmacy_id = $2`, item.InventoryID, pharmacyID)
-			if errors.Is(err, sql.ErrNoRows) {
-				respondError(w, http.StatusBadRequest, fmt.Sprintf("inventory not found for item %d (user pharmacy_id: %d)", item.InventoryID, pharmacyID))
-				return
-			}
-			if err != nil {
-				respondError(w, http.StatusInternalServerError, "unable to fetch inventory")
-				return
-			}
-			snapshots[item.InventoryID] = snap
-			remaining[item.InventoryID] = snap.Quantity
-		}
-		if item.MedicineID != 0 && snap.MedicineID != item.MedicineID {
-			respondError(w, http.StatusBadRequest, "inventory item does not match medicine")
-			return
-		}
-		if remaining[item.InventoryID] < item.Quantity {
-			respondError(w, http.StatusBadRequest, "insufficient stock for one or more items")
-			return
-		}
-		remaining[item.InventoryID] -= item.Quantity
-		total += float64(item.Quantity) * snap.SalePrice
-	}
-
-	totalAfterDiscount := total - req.Discount
-	if totalAfterDiscount < 0 {
-		totalAfterDiscount = 0
-	}
-	due := totalAfterDiscount - req.PaidAmount
-	if due < 0 {
-		due = 0
+	pharmacyID := pharmacyIDFromContext(r)
+	userID := r.Context().Value(ctxUserID).(int64)
+	if pharmacyID <= 0 || userID <= 0 {
+		respondError(w, http.StatusForbidden, "invalid context")
+		return
 	}
 
 	tx, err := h.db.Beginx()
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "unable to start sale")
+		respondError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 	defer tx.Rollback()
 
-	userID := r.Context().Value(ctxUserID).(int64)
+	var total float64
+	for _, item := range req.Items {
+		var inv domain.InventoryItem
+		err := tx.Get(&inv, "SELECT * FROM inventory WHERE id = $1 AND pharmacy_id = $2", item.InventoryID, pharmacyID)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("inventory item %d not found", item.InventoryID))
+			return
+		}
+
+		if inv.Quantity < item.Quantity {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("insufficient stock for item %d", item.InventoryID))
+			return
+		}
+
+		// Use current price from inventory
+		itemTotal := inv.SalePrice * float64(item.Quantity)
+		total += itemTotal
+	}
+
+	// Calculate amounts with rounding
+	// Enforce integer logic: Round everything to nearest integer
+	totalRounded := math.Round(total)
+	discountAmount := math.Round((totalRounded * req.DiscountPercent) / 100)
+	roundOff := math.Round(req.RoundOff)
+
+	netPayable := totalRounded - discountAmount + roundOff
+	paidAmount := math.Round(req.PaidAmount)
+
+	var changeReturned float64
+	var dueAmount float64
+
+	if paidAmount >= netPayable {
+		changeReturned = paidAmount - netPayable
+		dueAmount = 0
+	} else {
+		changeReturned = 0
+		dueAmount = netPayable - paidAmount
+	}
+
+	// Insert Sale
 	var saleID int64
-	err = tx.QueryRowx(`INSERT INTO sales (pharmacy_id, user_id, total_amount, discount, paid_amount, due_amount) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		pharmacyID, userID, total, req.Discount, req.PaidAmount, due).Scan(&saleID)
+	err = tx.QueryRow(`
+		INSERT INTO sales (pharmacy_id, user_id, total_amount, discount, paid_amount, due_amount, round_off, change_returned)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		pharmacyID, userID, totalRounded, discountAmount, paidAmount, dueAmount, roundOff, changeReturned).Scan(&saleID)
 	if err != nil {
-		respondError(w, http.StatusInternalServerError, "unable to create sale")
+		respondError(w, http.StatusInternalServerError, "unable to create sale record")
 		return
 	}
 
+	// Process items and update inventory
 	for _, item := range req.Items {
-		snap := snapshots[item.InventoryID]
-		medicineID := item.MedicineID
-		if medicineID == 0 {
-			medicineID = snap.MedicineID
+		var inv domain.InventoryItem
+		// Re-fetch to be safe within tx, though we fetched above.
+		// Optimization: could cache above, but this is safer for consistency.
+		err := tx.Get(&inv, "SELECT * FROM inventory WHERE id = $1", item.InventoryID)
+		if err != nil {
+			continue
 		}
-		subtotal := float64(item.Quantity) * snap.SalePrice
-		if _, err := tx.Exec(`INSERT INTO sale_items (sale_id, medicine_id, inventory_id, quantity, unit_price, subtotal) VALUES ($1, $2, $3, $4, $5, $6)`,
-			saleID, medicineID, snap.ID, item.Quantity, snap.SalePrice, subtotal); err != nil {
-			respondError(w, http.StatusInternalServerError, "unable to save sale items: "+err.Error())
+
+		subtotal := inv.SalePrice * float64(item.Quantity)
+		_, err = tx.Exec(`
+			INSERT INTO sale_items (sale_id, medicine_id, inventory_id, quantity, unit_price, subtotal)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			saleID, inv.MedicineID, inv.ID, item.Quantity, inv.SalePrice, subtotal)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "unable to add sale items")
 			return
 		}
-	}
 
-	for inventoryID, snap := range snapshots {
-		newQty := remaining[inventoryID]
-		if _, err := tx.Exec(`UPDATE inventory SET quantity = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, newQty, snap.ID); err != nil {
+		_, err = tx.Exec(`UPDATE inventory SET quantity = quantity - $1 WHERE id = $2`, item.Quantity, inv.ID)
+		if err != nil {
 			respondError(w, http.StatusInternalServerError, "unable to update inventory")
 			return
 		}
@@ -793,12 +806,14 @@ func (h *Handler) createSale(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondJSON(w, http.StatusCreated, map[string]any{
-		"sale_id":      saleID,
-		"total":        total,
-		"discount":     req.Discount,
-		"paid_amount":  req.PaidAmount,
-		"due_amount":   due,
-		"final_amount": totalAfterDiscount,
+		"sale_id":         saleID,
+		"total":           totalRounded,
+		"discount":        discountAmount,
+		"round_off":       roundOff,
+		"net_payable":     netPayable,
+		"paid_amount":     paidAmount,
+		"change_returned": changeReturned,
+		"due_amount":      dueAmount,
 	})
 }
 

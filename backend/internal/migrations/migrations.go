@@ -67,6 +67,8 @@ func Run(db *sqlx.DB) {
 			subtotal DOUBLE PRECISION NOT NULL
 		);`,
 		`ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS inventory_id INTEGER REFERENCES inventory(id);`,
+		`ALTER TABLE sales ADD COLUMN IF NOT EXISTS round_off DOUBLE PRECISION DEFAULT 0;`,
+		`ALTER TABLE sales ADD COLUMN IF NOT EXISTS change_returned DOUBLE PRECISION DEFAULT 0;`,
 	}
 
 	for _, stmt := range schema {

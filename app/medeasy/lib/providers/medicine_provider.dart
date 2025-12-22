@@ -14,7 +14,7 @@ class MedicineProvider extends ChangeNotifier {
   bool get loading => _loading;
   String? get error => _error;
 
-  Future<void> search(String token, {String query = ''}) async {
+  Future<void> search({required String token, String query = ''}) async {
     _loading = true;
     notifyListeners();
     try {

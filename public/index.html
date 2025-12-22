@@ -80,6 +80,17 @@
                     </select>
                   </div>
 
+                  <div id="employee-fields" style="display: none">
+                    <div class="form-group">
+                      <label>Pharmacy ID (for employees)</label>
+                      <input
+                        type="number"
+                        name="pharmacy_id"
+                        placeholder="Existing pharmacy ID"
+                      />
+                    </div>
+                  </div>
+
                   <div id="owner-fields">
                     <div class="form-group">
                       <label>Pharmacy Name</label>
@@ -244,10 +255,6 @@
                 <h3>Add Inventory</h3>
                 <form id="add-inventory-form">
                   <div class="form-group">
-                    <label>Pharmacy ID</label>
-                    <input type="number" name="pharmacy_id" required />
-                  </div>
-                  <div class="form-group">
                     <label>Medicine ID</label>
                     <input type="number" name="medicine_id" required />
                   </div>
@@ -287,10 +294,6 @@
                   <div class="form-group">
                     <label>Inventory ID</label>
                     <input type="number" name="id" required />
-                  </div>
-                  <div class="form-group">
-                    <label>Pharmacy ID</label>
-                    <input type="number" name="pharmacy_id" required />
                   </div>
                   <div class="form-group">
                     <label>Medicine ID</label>
@@ -364,11 +367,6 @@
                 <h3>Create Sale</h3>
                 <form id="create-sale-form">
                   <div class="form-group">
-                    <label>Pharmacy ID</label>
-                    <input type="number" name="pharmacy_id" required />
-                  </div>
-
-                  <div class="form-group">
                     <label>Discount</label>
                     <input
                       type="number"
@@ -393,16 +391,12 @@
                     <div class="sale-item-row">
                       <input
                         type="number"
-                        placeholder="Med ID"
-                        class="item-med-id"
+                        placeholder="Inventory ID"
+                        class="item-inventory-id"
                         required
                       />
-                      <input
-                        type="number"
-                        placeholder="Qty"
-                        class="item-qty"
-                        required
-                      />
+                      <input type="number" placeholder="Med ID (optional)" class="item-med-id" />
+                      <input type="number" placeholder="Qty" class="item-qty" required />
                     </div>
                   </div>
 
@@ -431,10 +425,6 @@
               <div class="card">
                 <h3>Daily Sales</h3>
                 <form id="daily-sales-form">
-                  <div class="form-group">
-                    <label>Pharmacy ID (Optional)</label>
-                    <input type="number" name="pharmacy_id" />
-                  </div>
                   <button type="submit" class="btn secondary">Get Report</button>
                 </form>
               </div>
@@ -442,10 +432,6 @@
               <div class="card">
                 <h3>Monthly Sales</h3>
                 <form id="monthly-sales-form">
-                  <div class="form-group">
-                    <label>Pharmacy ID (Optional)</label>
-                    <input type="number" name="pharmacy_id" />
-                  </div>
                   <button type="submit" class="btn secondary">Get Report</button>
                 </form>
               </div>

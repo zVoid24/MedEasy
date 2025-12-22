@@ -23,6 +23,8 @@ function init() {
   const tabContents = document.querySelectorAll(".tab-content");
   const registerRole = document.getElementById("register-role");
   const ownerFields = document.getElementById("owner-fields");
+  const employeeFields = document.getElementById("employee-fields");
+  const employeePharmacyInput = employeeFields?.querySelector("input[name='pharmacy_id']");
 
   updateAuthStatus(authStatus);
   setupTabs(tabBtns, tabContents);
@@ -30,11 +32,14 @@ function init() {
 
   // Role toggle for register
   if (registerRole && ownerFields) {
-    const toggleOwnerFields = () => {
-      ownerFields.style.display = registerRole.value === "owner" ? "block" : "none";
+    const toggleFields = () => {
+      const isOwner = registerRole.value === "owner";
+      ownerFields.style.display = isOwner ? "block" : "none";
+      if (employeeFields) employeeFields.style.display = isOwner ? "none" : "block";
+      if (employeePharmacyInput) employeePharmacyInput.required = !isOwner;
     };
-    registerRole.addEventListener("change", toggleOwnerFields);
-    toggleOwnerFields();
+    registerRole.addEventListener("change", toggleFields);
+    toggleFields();
   }
 
   // Add sale item button
@@ -47,7 +52,8 @@ function init() {
       const div = document.createElement("div");
       div.className = "sale-item-row";
       div.innerHTML = `
-        <input type="number" placeholder="Med ID" class="item-med-id" required>
+        <input type="number" placeholder="Inventory ID" class="item-inventory-id" required>
+        <input type="number" placeholder="Med ID (optional)" class="item-med-id">
         <input type="number" placeholder="Qty" class="item-qty" required>
       `;
       container.appendChild(div);
@@ -154,8 +160,8 @@ function setupForms() {
     { id: "create-pharmacy-form", url: "/pharmacies", method: "POST" },
     { id: "update-pharmacy-form", url: "/pharmacies/:id", method: "PUT", hasId: true },
     { id: "search-medicine-form", url: "/medicines", method: "GET", query: true },
-    { id: "add-inventory-form", url: "/inventory", method: "POST", numeric: ["pharmacy_id", "medicine_id", "quantity"], float: ["cost_price", "sale_price"] },
-    { id: "update-inventory-form", url: "/inventory/:id", method: "PUT", hasId: true, numeric: ["pharmacy_id", "medicine_id", "quantity"], float: ["cost_price", "sale_price"] },
+    { id: "add-inventory-form", url: "/inventory", method: "POST", numeric: ["medicine_id", "quantity"], float: ["cost_price", "sale_price"] },
+    { id: "update-inventory-form", url: "/inventory/:id", method: "PUT", hasId: true, numeric: ["medicine_id", "quantity"], float: ["cost_price", "sale_price"] },
     { id: "update-stock-form", url: "/inventory/:id/stock", method: "POST", hasId: true, numeric: ["quantity"] },
     { id: "expiry-alert-form", url: "/inventory/expiry-alert", method: "GET", query: true },
     { id: "daily-sales-form", url: "/reports/sales/daily", method: "GET", query: true },
@@ -205,6 +211,8 @@ function setupForms() {
         delete data.pharmacy_name;
         delete data.pharmacy_address;
         delete data.pharmacy_location;
+      } else if (config.id === "register-form" && data.role === "owner") {
+        delete data.pharmacy_id;
       }
 
       const res = await apiCall(url, config.method, data);
@@ -243,15 +251,20 @@ function setupForms() {
 
       const items = [];
       document.querySelectorAll(".sale-item-row").forEach((row) => {
+        const inventoryId = row.querySelector(".item-inventory-id")?.value;
         const medId = row.querySelector(".item-med-id")?.value;
         const qty = row.querySelector(".item-qty")?.value;
-        if (medId && qty) {
-          items.push({ medicine_id: parseInt(medId, 10), quantity: parseInt(qty, 10) });
+        if (inventoryId && qty) {
+          const item = {
+            inventory_id: parseInt(inventoryId, 10),
+            quantity: parseInt(qty, 10),
+          };
+          if (medId) item.medicine_id = parseInt(medId, 10);
+          items.push(item);
         }
       });
 
       const data = {
-        pharmacy_id: parseInt(formData.get("pharmacy_id"), 10),
         discount: parseFloat(formData.get("discount") || 0),
         paid_amount: parseFloat(formData.get("paid_amount")),
         items,

@@ -6,7 +6,11 @@ import '../models/inventory_item.dart';
 class InventoryService {
   Future<void> addInventory({
     required String token,
-    required int medicineId,
+    int? medicineId,
+    String? brandName,
+    String? genericName,
+    String? manufacturer,
+    String? type,
     required int quantity,
     required double costPrice,
     required double salePrice,
@@ -14,7 +18,11 @@ class InventoryService {
   }) async {
     final client = ApiClient(token: token);
     final response = await client.post('/inventory', {
-      'medicine_id': medicineId,
+      if (medicineId != null) 'medicine_id': medicineId,
+      if (brandName != null) 'brand_name': brandName,
+      if (genericName != null) 'generic_name': genericName,
+      if (manufacturer != null) 'manufacturer': manufacturer,
+      if (type != null) 'type': type,
       'quantity': quantity,
       'cost_price': costPrice,
       'sale_price': salePrice,
@@ -38,7 +46,9 @@ class InventoryService {
       throw ApiError(_messageFromResponse(response.body));
     }
     final decoded = jsonDecode(response.body) as List<dynamic>;
-    return decoded.map((e) => InventoryItem.fromJson(e as Map<String, dynamic>)).toList();
+    return decoded
+        .map((e) => InventoryItem.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   String _messageFromResponse(String body) {

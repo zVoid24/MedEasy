@@ -457,7 +457,7 @@ func (h *Handler) searchMedicines(w http.ResponseWriter, r *http.Request) {
 
 type inventorySearchResult struct {
 	InventoryID  int64   `db:"inventory_id" json:"inventory_id"`
-	MedicineID   int64   `db:"medicine_id" json:"medicine_id"`
+	MedicineID   *int64  `db:"medicine_id" json:"medicine_id"`
 	BrandName    string  `db:"brand_name" json:"brand_name"`
 	GenericName  string  `db:"generic_name" json:"generic_name"`
 	Manufacturer string  `db:"manufacturer" json:"manufacturer"`
@@ -480,16 +480,21 @@ func (h *Handler) searchInventoryMedicines(w http.ResponseWriter, r *http.Reques
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("query"))
 	args := []any{pharmacyID}
-	sqlQuery := `SELECT i.id AS inventory_id, i.medicine_id, i.quantity, i.cost_price, i.sale_price, i.expiry_date, m.brand_name, m.generic_name, m.manufacturer, m.type, (i.cost_price * i.quantity) AS total_cost
+	sqlQuery := `SELECT i.id AS inventory_id, i.medicine_id, i.quantity, i.cost_price, i.sale_price, i.expiry_date, 
+	             COALESCE(i.brand_name, m.brand_name, 'Unknown') as brand_name, 
+	             COALESCE(i.generic_name, m.generic_name, '') as generic_name, 
+	             COALESCE(i.manufacturer, m.manufacturer, '') as manufacturer, 
+	             COALESCE(i.type, m.type, '') as type, 
+	             (i.cost_price * i.quantity) AS total_cost
                 FROM inventory i
-                JOIN medicines m ON m.id = i.medicine_id
+                LEFT JOIN medicines m ON m.id = i.medicine_id
                 WHERE i.pharmacy_id = $1 AND i.quantity > 0`
 	if query != "" {
 		like := "%" + query + "%"
 		args = append(args, like)
-		sqlQuery += " AND (m.brand_name ILIKE $2 OR m.generic_name ILIKE $2)"
+		sqlQuery += " AND (COALESCE(i.brand_name, m.brand_name) ILIKE $2 OR COALESCE(i.generic_name, m.generic_name) ILIKE $2)"
 	}
-	sqlQuery += " ORDER BY m.brand_name LIMIT 25"
+	sqlQuery += " ORDER BY brand_name LIMIT 25"
 
 	var results []inventorySearchResult
 	if err := h.db.Select(&results, sqlQuery, args...); err != nil {
@@ -502,12 +507,16 @@ func (h *Handler) searchInventoryMedicines(w http.ResponseWriter, r *http.Reques
 // Inventory handlers
 
 type inventoryRequest struct {
-	PharmacyID int64   `json:"pharmacy_id"`
-	MedicineID int64   `json:"medicine_id"`
-	Quantity   int64   `json:"quantity"`
-	CostPrice  float64 `json:"cost_price"`
-	SalePrice  float64 `json:"sale_price"`
-	ExpiryDate string  `json:"expiry_date"`
+	PharmacyID   int64   `json:"pharmacy_id"`
+	MedicineID   *int64  `json:"medicine_id"`
+	BrandName    string  `json:"brand_name"`
+	GenericName  string  `json:"generic_name"`
+	Manufacturer string  `json:"manufacturer"`
+	Type         string  `json:"type"`
+	Quantity     int64   `json:"quantity"`
+	CostPrice    float64 `json:"cost_price"`
+	SalePrice    float64 `json:"sale_price"`
+	ExpiryDate   string  `json:"expiry_date"`
 }
 
 func (h *Handler) addInventory(w http.ResponseWriter, r *http.Request) {
@@ -524,14 +533,37 @@ func (h *Handler) addInventory(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.MedicineID == 0 || req.Quantity <= 0 || req.CostPrice <= 0 || req.SalePrice <= 0 {
-		respondError(w, http.StatusBadRequest, "medicine_id, quantity, cost_price and sale_price are required")
+	if req.Quantity <= 0 || req.CostPrice <= 0 || req.SalePrice <= 0 {
+		respondError(w, http.StatusBadRequest, "quantity, cost_price and sale_price are required")
 		return
 	}
+
+	var brandName, genericName, manufacturer, typeStr string
+	if req.MedicineID != nil && *req.MedicineID != 0 {
+		// Fetch details from medicines table
+		err := h.db.QueryRow("SELECT brand_name, generic_name, manufacturer, type FROM medicines WHERE id = $1", *req.MedicineID).
+			Scan(&brandName, &genericName, &manufacturer, &typeStr)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "invalid medicine_id")
+			return
+		}
+	} else {
+		// Custom medicine
+		if req.BrandName == "" {
+			respondError(w, http.StatusBadRequest, "brand_name is required for custom medicine")
+			return
+		}
+		brandName = req.BrandName
+		genericName = req.GenericName
+		manufacturer = req.Manufacturer
+		typeStr = req.Type
+		req.MedicineID = nil // Ensure it's nil for DB insertion if it was 0
+	}
+
 	unitCost := req.CostPrice / float64(req.Quantity)
 	unitSale := req.SalePrice / float64(req.Quantity)
-	_, err := h.db.Exec(`INSERT INTO inventory (pharmacy_id, medicine_id, quantity, cost_price, sale_price, expiry_date) VALUES ($1, $2, $3, $4, $5, $6)`,
-		pharmacyID, req.MedicineID, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate))
+	_, err := h.db.Exec(`INSERT INTO inventory (pharmacy_id, medicine_id, brand_name, generic_name, manufacturer, type, quantity, cost_price, sale_price, expiry_date) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		pharmacyID, req.MedicineID, brandName, genericName, manufacturer, typeStr, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to add inventory")
 		return
@@ -585,8 +617,13 @@ func (h *Handler) updateInventory(w http.ResponseWriter, r *http.Request) {
 	}
 	unitCost := req.CostPrice / float64(req.Quantity)
 	unitSale := req.SalePrice / float64(req.Quantity)
-	_, err = h.db.Exec(`UPDATE inventory SET medicine_id = $1, quantity = $2, cost_price = $3, sale_price = $4, expiry_date = $5, updated_at = CURRENT_TIMESTAMP WHERE id = $6`,
-		req.MedicineID, req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate), id)
+
+	// For update, we might want to update names too if it's a custom medicine, but for now let's keep it simple and just update stock/prices.
+	// If we want to support updating names, we'd need to fetch current state.
+	// Let's assume for now we only update quantity/prices/expiry.
+
+	_, err = h.db.Exec(`UPDATE inventory SET quantity = $1, cost_price = $2, sale_price = $3, expiry_date = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5`,
+		req.Quantity, unitCost, unitSale, nullIfEmpty(req.ExpiryDate), id)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to update inventory")
 		return
@@ -681,9 +718,9 @@ func (h *Handler) expiryAlerts(w http.ResponseWriter, r *http.Request) {
 // Sales handlers
 
 type saleItemRequest struct {
-	InventoryID int64 `json:"inventory_id"`
-	MedicineID  int64 `json:"medicine_id"`
-	Quantity    int64 `json:"quantity"`
+	InventoryID int64  `json:"inventory_id"`
+	MedicineID  *int64 `json:"medicine_id"`
+	Quantity    int64  `json:"quantity"`
 }
 
 type saleRequest struct {
@@ -856,8 +893,8 @@ func (h *Handler) monthlySales(w http.ResponseWriter, r *http.Request) {
 
 type saleItemDetail struct {
 	SaleID      int64   `db:"sale_id" json:"sale_id"`
-	MedicineID  int64   `db:"medicine_id" json:"medicine_id"`
-	InventoryID int64   `db:"inventory_id" json:"inventory_id"`
+	MedicineID  *int64  `db:"medicine_id" json:"medicine_id"`
+	InventoryID *int64  `db:"inventory_id" json:"inventory_id"`
 	BrandName   string  `db:"brand_name" json:"brand_name"`
 	Quantity    int64   `db:"quantity" json:"quantity"`
 	UnitPrice   float64 `db:"unit_price" json:"unit_price"`
@@ -928,9 +965,11 @@ func (h *Handler) salesReport(w http.ResponseWriter, r *http.Request) {
 		ids[i] = sale.ID
 	}
 
-	itemsQuery, itemsArgs, err := sqlx.In(`SELECT si.sale_id, si.medicine_id, si.inventory_id, si.quantity, si.unit_price, si.subtotal, m.brand_name
+	itemsQuery, itemsArgs, err := sqlx.In(`SELECT si.sale_id, si.medicine_id, si.inventory_id, si.quantity, si.unit_price, si.subtotal, 
+	            COALESCE(m.brand_name, i.brand_name, 'Custom Medicine') as brand_name
                 FROM sale_items si
-                JOIN medicines m ON m.id = si.medicine_id
+                LEFT JOIN medicines m ON m.id = si.medicine_id
+                LEFT JOIN inventory i ON i.id = si.inventory_id
                 WHERE si.sale_id IN (?)`, ids)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "unable to prepare sale items query")
@@ -950,7 +989,11 @@ func (h *Handler) salesReport(w http.ResponseWriter, r *http.Request) {
 
 	report := make([]saleReportEntry, len(sales))
 	for i, sale := range sales {
-		report[i] = saleReportEntry{Sale: sale, Items: itemsBySale[sale.ID]}
+		items := itemsBySale[sale.ID]
+		if items == nil {
+			items = []saleItemDetail{}
+		}
+		report[i] = saleReportEntry{Sale: sale, Items: items}
 	}
 
 	respondJSON(w, http.StatusOK, report)

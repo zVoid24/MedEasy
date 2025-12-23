@@ -1,9 +1,12 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 // Config holds application configuration values.
@@ -15,6 +18,11 @@ type Config struct {
 
 // Load reads configuration from environment variables with reasonable defaults.
 func Load() Config {
+	err := godotenv.Overload()
+	if err != nil {
+		fmt.Println("Failed to load .env file")
+		os.Exit(1)
+	}
 	secret := os.Getenv("SECRET")
 	if secret == "" {
 		secret = "dev_secret"
@@ -47,8 +55,7 @@ func Load() Config {
 		if password == "" {
 			password = "8135"
 		}
-
-		dsn = "postgres://postgres:8135@localhost:5432/medeasy?sslmode=disable"
+		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, password, host, dbPort, name)
 	}
 
 	// Validate that port is numeric.

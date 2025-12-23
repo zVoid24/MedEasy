@@ -69,6 +69,12 @@ func Run(db *sqlx.DB) {
 		`ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS inventory_id INTEGER REFERENCES inventory(id);`,
 		`ALTER TABLE sales ADD COLUMN IF NOT EXISTS round_off DOUBLE PRECISION DEFAULT 0;`,
 		`ALTER TABLE sales ADD COLUMN IF NOT EXISTS change_returned DOUBLE PRECISION DEFAULT 0;`,
+		`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS brand_name TEXT;`,
+		`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS generic_name TEXT;`,
+		`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS manufacturer TEXT;`,
+		`ALTER TABLE inventory ADD COLUMN IF NOT EXISTS type TEXT;`,
+		`ALTER TABLE inventory ALTER COLUMN medicine_id DROP NOT NULL;`,
+		`ALTER TABLE sale_items ALTER COLUMN medicine_id DROP NOT NULL;`,
 	}
 
 	for _, stmt := range schema {

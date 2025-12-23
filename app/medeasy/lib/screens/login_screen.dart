@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:medeasy/screens/dashboard_screen.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
-import 'dashboard_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -49,9 +49,9 @@ class _LoginScreenState extends State<LoginScreen> {
         MaterialPageRoute(builder: (_) => const DashboardScreen()),
       );
     } else if (auth.error != null && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(auth.error!)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(auth.error!)));
     }
   }
 
@@ -60,78 +60,163 @@ class _LoginScreenState extends State<LoginScreen> {
     final auth = context.watch<AuthProvider>();
     return Scaffold(
       body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 480),
-          child: Card(
-            margin: const EdgeInsets.all(24),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      _isRegister ? 'Register Owner' : 'Login',
-                      style: Theme.of(context).textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 16),
-                    if (_isRegister)
+        child: SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Card(
+              margin: const EdgeInsets.all(24),
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        _isRegister ? 'Register Owner' : 'Login',
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: 16),
+                      if (_isRegister)
+                        TextFormField(
+                          controller: _usernameCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Owner name',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          validator: (v) =>
+                              (v == null || v.isEmpty) ? 'Required' : null,
+                        ),
+                      const SizedBox(height: 12),
                       TextFormField(
-                        controller: _usernameCtrl,
-                        decoration: const InputDecoration(labelText: 'Owner name'),
+                        controller: _emailCtrl,
+                        decoration: InputDecoration(
+                          labelText: 'Email',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(15),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(15),
+                            borderSide: BorderSide(color: Colors.grey),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(15),
+                            borderSide: BorderSide(
+                              color: Theme.of(context).primaryColor,
+                              width: 2,
+                            ),
+                          ),
+                        ),
                         validator: (v) =>
                             (v == null || v.isEmpty) ? 'Required' : null,
                       ),
-                    TextFormField(
-                      controller: _emailCtrl,
-                      decoration: const InputDecoration(labelText: 'Email'),
-                      validator: (v) =>
-                          (v == null || v.isEmpty) ? 'Required' : null,
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _passwordCtrl,
-                      decoration: const InputDecoration(labelText: 'Password'),
-                      obscureText: true,
-                      validator: (v) =>
-                          (v == null || v.isEmpty) ? 'Required' : null,
-                    ),
-                    if (_isRegister) ...[
                       const SizedBox(height: 12),
                       TextFormField(
-                        controller: _pharmacyNameCtrl,
-                        decoration:
-                            const InputDecoration(labelText: 'Pharmacy name'),
+                        controller: _passwordCtrl,
+                        decoration: InputDecoration(
+                          labelText: 'Password',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(15),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(15),
+                            borderSide: BorderSide(color: Colors.grey),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(15),
+                            borderSide: BorderSide(
+                              color: Theme.of(context).primaryColor,
+                              width: 2,
+                            ),
+                          ),
+                        ),
+                        obscureText: true,
                         validator: (v) =>
                             (v == null || v.isEmpty) ? 'Required' : null,
                       ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _pharmacyLocationCtrl,
-                        decoration: const InputDecoration(
-                            labelText: 'Pharmacy location (city)'),
+                      if (_isRegister) ...[
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _pharmacyNameCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Pharmacy name',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          validator: (v) =>
+                              (v == null || v.isEmpty) ? 'Required' : null,
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _pharmacyLocationCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Pharmacy location (city)',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 20),
+                      FilledButton(
+                        onPressed: auth.loading ? null : _submit,
+                        child: Text(
+                          auth.loading
+                              ? 'Please wait...'
+                              : (_isRegister ? 'Register & start' : 'Login'),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          setState(() {
+                            _isRegister = !_isRegister;
+                          });
+                        },
+                        child: Text(
+                          _isRegister
+                              ? 'Have an account? Login'
+                              : 'Create owner account',
+                        ),
                       ),
                     ],
-                    const SizedBox(height: 20),
-                    FilledButton(
-                      onPressed: auth.loading ? null : _submit,
-                      child: Text(auth.loading
-                          ? 'Please wait...'
-                          : (_isRegister ? 'Register & start' : 'Login')),
-                    ),
-                    TextButton(
-                      onPressed: () {
-                        setState(() {
-                          _isRegister = !_isRegister;
-                        });
-                      },
-                      child: Text(_isRegister
-                          ? 'Have an account? Login'
-                          : 'Create owner account'),
-                    )
-                  ],
+                  ),
                 ),
               ),
             ),

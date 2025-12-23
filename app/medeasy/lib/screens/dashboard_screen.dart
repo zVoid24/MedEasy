@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
@@ -13,8 +14,9 @@ import '../providers/inventory_provider.dart';
 import '../providers/medicine_provider.dart';
 
 import '../providers/sales_provider.dart';
-import 'login_screen.dart';
+import 'profile_screen.dart';
 import 'report_screens.dart';
+import '../services/database_helper.dart';
 import '../widgets/month_year_picker.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -28,21 +30,43 @@ class _DashboardScreenState extends State<DashboardScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   bool _isOwner = false;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
 
   @override
   void initState() {
     super.initState();
     final auth = context.read<AuthProvider>();
     _isOwner = auth.user?.role == 'owner';
-    // Tabs: Sales, Inventory List, Add Inventory (Owner/Employee), Employees (Owner), Reports (Owner)
-    // Employee: Sales, Inventory List, Add Inventory
-    // Owner: Sales, Inventory List, Add Inventory, Employees, Reports
     final tabCount = _isOwner ? 5 : 3;
     _tabController = TabController(length: tabCount, vsync: this);
+
+    // Listen for connectivity changes
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      results,
+    ) {
+      // If any of the results indicate connection (mobile, wifi, ethernet, etc.)
+      if (results.any((r) => r != ConnectivityResult.none)) {
+        _syncData();
+      }
+    });
+  }
+
+  Future<void> _syncData() async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+
+    // Sync pending sales
+    await context.read<SalesProvider>().syncPendingSales(auth.token!);
+
+    // Refresh inventory to get latest updates from other users
+    if (mounted) {
+      await context.read<InventoryProvider>().loadInventory(token: auth.token!);
+    }
   }
 
   @override
   void dispose() {
+    _connectivitySubscription?.cancel();
     _tabController.dispose();
     super.dispose();
   }
@@ -57,14 +81,75 @@ class _DashboardScreenState extends State<DashboardScreen>
       appBar: AppBar(
         title: const Text('MedEasy POS'),
         centerTitle: true,
+        leadingWidth: 100,
+        leading: StreamBuilder<List<ConnectivityResult>>(
+          stream: Connectivity().onConnectivityChanged,
+          builder: (context, snapshot) {
+            final results = snapshot.data;
+            final isOffline =
+                results != null &&
+                results.every((r) => r == ConnectivityResult.none);
+
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 16),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: !isOffline
+                        ? Colors.green.withOpacity(0.1)
+                        : Colors.red.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: !isOffline ? Colors.green : Colors.red,
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: !isOffline ? Colors.green : Colors.red,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: (!isOffline ? Colors.green : Colors.red)
+                                  .withOpacity(0.5),
+                              blurRadius: 6,
+                              spreadRadius: 2,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        !isOffline ? 'Online' : 'Offline',
+                        style: TextStyle(
+                          color: !isOffline ? Colors.green : Colors.red,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.person),
             onPressed: () {
-              context.read<AuthProvider>().logout();
-              Navigator.of(context).pushReplacement(
-                MaterialPageRoute(builder: (_) => const LoginScreen()),
-              );
+              Navigator.of(
+                context,
+              ).push(MaterialPageRoute(builder: (_) => const ProfileScreen()));
             },
           ),
         ],
@@ -113,6 +198,10 @@ class AddInventoryTab extends StatefulWidget {
 
 class _AddInventoryTabState extends State<AddInventoryTab> {
   final _searchCtrl = TextEditingController();
+  final _brandCtrl = TextEditingController();
+  final _genericCtrl = TextEditingController();
+  final _manufacturerCtrl = TextEditingController();
+  final _typeCtrl = TextEditingController();
   final _quantityCtrl = TextEditingController();
   final _costCtrl = TextEditingController();
   final _saleCtrl = TextEditingController();
@@ -124,6 +213,10 @@ class _AddInventoryTabState extends State<AddInventoryTab> {
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _brandCtrl.dispose();
+    _genericCtrl.dispose();
+    _manufacturerCtrl.dispose();
+    _typeCtrl.dispose();
     _quantityCtrl.dispose();
     _costCtrl.dispose();
     _saleCtrl.dispose();
@@ -169,10 +262,11 @@ class _AddInventoryTabState extends State<AddInventoryTab> {
   }
 
   Future<void> _addInventory() async {
-    if (_selected == null) {
+    // Allow custom medicine (selected is null)
+    if (_brandCtrl.text.isEmpty) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Please select a medicine')));
+      ).showSnackBar(const SnackBar(content: Text('Brand name is required')));
       return;
     }
     final auth = context.read<AuthProvider>();
@@ -184,7 +278,11 @@ class _AddInventoryTabState extends State<AddInventoryTab> {
 
     await context.read<InventoryProvider>().addInventory(
       token: auth.token!,
-      medicineId: _selected!.id,
+      medicineId: _selected?.id,
+      brandName: _brandCtrl.text.trim(),
+      genericName: _genericCtrl.text.trim(),
+      manufacturer: _manufacturerCtrl.text.trim(),
+      type: _typeCtrl.text.trim(),
       quantity: qty,
       costPrice: cost,
       salePrice: sale,
@@ -196,9 +294,13 @@ class _AddInventoryTabState extends State<AddInventoryTab> {
     final error = context.read<InventoryProvider>().error;
     if (mounted) {
       if (error != null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(error)));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: AppColors.error,
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Inventory added successfully')),
@@ -208,6 +310,10 @@ class _AddInventoryTabState extends State<AddInventoryTab> {
         _saleCtrl.clear();
         _expiryCtrl.clear();
         _searchCtrl.clear();
+        _brandCtrl.clear();
+        _genericCtrl.clear();
+        _manufacturerCtrl.clear();
+        _typeCtrl.clear();
         setState(() {
           _selected = null;
         });
@@ -235,6 +341,7 @@ class _AddInventoryTabState extends State<AddInventoryTab> {
               labelText: 'Search medicine...',
               prefixIcon: Icon(Icons.search),
               hintText: 'Type to search automatically',
+              border: InputBorder.none,
             ),
             onChanged: _onSearchChanged,
           ),
@@ -283,91 +390,250 @@ class _AddInventoryTabState extends State<AddInventoryTab> {
                         : null,
                     selected: isSelected,
                     selectedTileColor: AppColors.primary.withOpacity(0.1),
-                    onTap: () => setState(() => _selected = medicine),
+                    onTap: () {
+                      setState(() {
+                        _selected = medicine;
+                        _brandCtrl.text = medicine.brandName;
+                        _genericCtrl.text = medicine.genericName;
+                        _manufacturerCtrl.text = medicine.manufacturer;
+                        _typeCtrl.text = medicine.type;
+                      });
+                    },
                   );
                 },
               ),
             ),
           ],
           const SizedBox(height: 16),
-          if (_selected != null)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Selected: ${_selected!.brandName}',
-                      style: AppTextStyle.sectionTitle,
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _quantityCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Quantity',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: TextField(
-                            controller: _expiryCtrl,
-                            readOnly: true,
-                            decoration: const InputDecoration(
-                              labelText: 'Expiry (MMM yyyy)',
-                              suffixIcon: Icon(Icons.calendar_today),
-                            ),
-                            onTap: () => _selectDate(context),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _costCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Total Cost',
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: TextField(
-                            controller: _saleCtrl,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText: 'Total Sale',
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton.icon(
-                        onPressed: inventoryProv.saving ? null : _addInventory,
-                        icon: const Icon(Icons.add_box),
-                        label: Text(
-                          inventoryProv.saving
-                              ? 'Saving...'
-                              : 'Add to Inventory',
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _selected != null
+                        ? 'Selected: ${_selected!.brandName}'
+                        : 'Custom Medicine Details',
+                    style: AppTextStyle.sectionTitle,
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _brandCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'Brand Name',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                        borderSide: BorderSide(color: Colors.grey),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                        borderSide: BorderSide(
+                          color: Theme.of(context).primaryColor,
+                          width: 2,
                         ),
                       ),
                     ),
-                  ],
-                ),
+                    onChanged: (_) => setState(() => _selected = null),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _genericCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'Generic Name',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                        borderSide: BorderSide(color: Colors.grey),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                        borderSide: BorderSide(
+                          color: Theme.of(context).primaryColor,
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                    onChanged: (_) => setState(() => _selected = null),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _manufacturerCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Manufacturer',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          onChanged: (_) => setState(() => _selected = null),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: _typeCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Type',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          onChanged: (_) => setState(() => _selected = null),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _quantityCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            labelText: 'Quantity',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: _expiryCtrl,
+                          readOnly: true,
+                          decoration: InputDecoration(
+                            labelText: 'Expiry (MMM yyyy)',
+                            suffixIcon: const Icon(Icons.calendar_today),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          onTap: () => _selectDate(context),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _costCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            labelText: 'Total Cost',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: _saleCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            labelText: 'Total Sale',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: inventoryProv.saving ? null : _addInventory,
+                      icon: const Icon(Icons.add_box),
+                      label: Text(
+                        inventoryProv.saving ? 'Saving...' : 'Add to Inventory',
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
+          ),
         ],
       ),
     );
@@ -401,7 +667,7 @@ class _InventoryListTabState extends State<InventoryListTab> {
     if (dateStr == null) return 'N/A';
     try {
       final date = DateTime.parse(dateStr);
-      return DateFormat('MMM, yyyy').format(date);
+      return DateFormat('MMM yyyy').format(date);
     } catch (e) {
       return dateStr;
     }
@@ -410,76 +676,74 @@ class _InventoryListTabState extends State<InventoryListTab> {
   @override
   Widget build(BuildContext context) {
     final inventoryProv = context.watch<InventoryProvider>();
-    return Scaffold(
-      floatingActionButton: FloatingActionButton(
-        onPressed: _loadInventory,
-        child: const Icon(Icons.refresh),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Your Inventory', style: AppTextStyle.headline),
-            const SizedBox(height: 16),
-            if (inventoryProv.loading)
-              const Center(child: CircularProgressIndicator())
-            else if (inventoryProv.items.isEmpty)
-              const Center(
-                child: Text(
-                  'No inventory items found',
-                  style: AppTextStyle.label,
-                ),
-              )
-            else
-              Expanded(
-                child: ListView.builder(
-                  itemCount: inventoryProv.items.length,
-                  itemBuilder: (context, index) {
-                    final e = inventoryProv.items[index];
-                    return Card(
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: AppColors.primary.withOpacity(0.1),
-                          child: Text(
-                            e.quantity.toString(),
-                            style: const TextStyle(
-                              color: AppColors.primary,
-                              fontWeight: FontWeight.bold,
+    return RefreshIndicator(
+      onRefresh: _loadInventory,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Your Inventory', style: AppTextStyle.headline),
+                const SizedBox(height: 16),
+                if (inventoryProv.loading && inventoryProv.items.isEmpty)
+                  const Center(child: CircularProgressIndicator())
+                else if (inventoryProv.error != null)
+                  Center(child: Text('Error: ${inventoryProv.error}'))
+                else if (inventoryProv.items.isEmpty)
+                  const Center(child: Text('No inventory items found'))
+                else
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: inventoryProv.items.length,
+                    itemBuilder: (context, index) {
+                      final e = inventoryProv.items[index];
+                      return Card(
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: AppColors.primary.withOpacity(0.1),
+                            child: Text(
+                              e.quantity.toString(),
+                              style: const TextStyle(
+                                color: AppColors.primary,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          title: Text(
+                            e.brandName,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Text(
+                            'Cost: ${e.unitCost.toStringAsFixed(2)} | Price: ${e.unitPrice.toStringAsFixed(2)}',
+                          ),
+                          trailing: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.background,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              _formatDate(e.expiryDate),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
                           ),
                         ),
-                        title: Text(
-                          e.brandName,
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text(
-                          'Cost: ${e.unitCost.toStringAsFixed(2)} | Price: ${e.unitPrice.toStringAsFixed(2)}',
-                        ),
-                        trailing: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: AppColors.background,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            _formatDate(e.expiryDate),
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-          ],
-        ),
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -553,21 +817,69 @@ class _EmployeeTabState extends State<EmployeeTab> {
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _nameCtrl,
-                  decoration: const InputDecoration(labelText: 'Username'),
+                  decoration: InputDecoration(
+                    labelText: 'Username',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                      borderSide: BorderSide(color: Colors.grey),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                      borderSide: BorderSide(
+                        color: Theme.of(context).primaryColor,
+                        width: 2,
+                      ),
+                    ),
+                  ),
                   validator: (v) =>
                       (v == null || v.isEmpty) ? 'Required' : null,
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _emailCtrl,
-                  decoration: const InputDecoration(labelText: 'Email'),
+                  decoration: InputDecoration(
+                    labelText: 'Email',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                      borderSide: BorderSide(color: Colors.grey),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                      borderSide: BorderSide(
+                        color: Theme.of(context).primaryColor,
+                        width: 2,
+                      ),
+                    ),
+                  ),
                   validator: (v) =>
                       (v == null || v.isEmpty) ? 'Required' : null,
                 ),
                 const SizedBox(height: 12),
                 TextFormField(
                   controller: _passCtrl,
-                  decoration: const InputDecoration(labelText: 'Password'),
+                  decoration: InputDecoration(
+                    labelText: 'Password',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                      borderSide: BorderSide(color: Colors.grey),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(15),
+                      borderSide: BorderSide(
+                        color: Theme.of(context).primaryColor,
+                        width: 2,
+                      ),
+                    ),
+                  ),
                   obscureText: true,
                   validator: (v) =>
                       (v == null || v.isEmpty) ? 'Required' : null,
@@ -599,12 +911,18 @@ class _ReportTabState extends State<ReportTab> {
   bool _loading = false;
   List<dynamic> _expiryAlerts = [];
   bool _loadingAlerts = false;
+  int _expiryDays = 90;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadExpiryAlerts();
+      // Sync recent sales for offline cache
+      final auth = context.read<AuthProvider>();
+      if (auth.token != null) {
+        context.read<SalesProvider>().syncRecentSales(auth.token!);
+      }
     });
   }
 
@@ -621,16 +939,36 @@ class _ReportTabState extends State<ReportTab> {
     setState(() => _loadingAlerts = true);
     try {
       final response = await http.get(
-        Uri.parse('${AppConfig.apiBaseUrl}/inventory/expiry-alert?days=90'),
+        Uri.parse(
+          '${AppConfig.apiBaseUrl}/inventory/expiry-alert?days=$_expiryDays',
+        ),
         headers: {'Authorization': 'Bearer ${auth.token}'},
       );
       if (response.statusCode == 200) {
+        final decoded = jsonDecode(response.body);
         setState(() {
-          _expiryAlerts = jsonDecode(response.body);
+          if (decoded is List) {
+            _expiryAlerts = decoded;
+          } else {
+            _expiryAlerts = [];
+          }
         });
+      } else {
+        throw Exception('Failed to load alerts');
       }
     } catch (e) {
-      // Handle error silently
+      // Fallback to local DB
+      print('Error loading remote alerts: $e. Using local data.');
+      try {
+        final localAlerts = await DatabaseHelper.instance.getExpiringItems(
+          _expiryDays,
+        );
+        setState(() {
+          _expiryAlerts = localAlerts;
+        });
+      } catch (dbError) {
+        print('Error loading local alerts: $dbError');
+      }
     } finally {
       if (mounted) setState(() => _loadingAlerts = false);
     }
@@ -642,15 +980,16 @@ class _ReportTabState extends State<ReportTab> {
 
     setState(() => _loading = true);
     try {
+      String title = '';
+      List<dynamic> sales = [];
       String startDate = '';
       String endDate = '';
-      String title = '';
-
       final now = DateTime.now();
+
       if (type == 'daily') {
+        title = 'Daily Sales (${DateFormat('MMM dd').format(now)})';
         startDate = DateFormat('yyyy-MM-dd').format(now);
         endDate = startDate;
-        title = 'Daily Sales (${DateFormat('MMM dd').format(now)})';
       } else if (type == 'monthly') {
         final start = DateTime(now.year, now.month, 1);
         final end = DateTime(now.year, now.month + 1, 0);
@@ -670,36 +1009,30 @@ class _ReportTabState extends State<ReportTab> {
         title = 'Custom Report ($startDate to $endDate)';
       }
 
-      final url =
-          '${AppConfig.apiBaseUrl}/reports/sales?start_date=$startDate&end_date=$endDate';
-
-      final response = await http.get(
-        Uri.parse(url),
-        headers: {'Authorization': 'Bearer ${auth.token}'},
+      // Use provider for all reports to support offline mode
+      sales = await context.read<SalesProvider>().getSales(
+        auth.token!,
+        startDate: startDate,
+        endDate: endDate,
       );
 
-      if (response.statusCode == 200) {
-        if (mounted) {
-          final List<dynamic> sales = jsonDecode(response.body);
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => SalesReportScreen(title: title, sales: sales),
-            ),
-          );
-        }
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Error: ${response.body}')));
-        }
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => SalesReportScreen(title: title, sales: sales),
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: AppColors.error,
+          ),
+        );
       }
     } finally {
       if (mounted) {
@@ -806,7 +1139,28 @@ class _ReportTabState extends State<ReportTab> {
             ),
           ),
           const SizedBox(height: 32),
-          Text('Expiry Alerts (Next 90 Days)', style: AppTextStyle.headline),
+          const SizedBox(height: 32),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Expiry Alerts', style: AppTextStyle.headline),
+              DropdownButton<int>(
+                value: _expiryDays,
+                items: const [
+                  DropdownMenuItem(value: 30, child: Text('1 Month')),
+                  DropdownMenuItem(value: 60, child: Text('2 Months')),
+                  DropdownMenuItem(value: 90, child: Text('3 Months')),
+                  DropdownMenuItem(value: 180, child: Text('6 Months')),
+                ],
+                onChanged: (val) {
+                  if (val != null) {
+                    setState(() => _expiryDays = val);
+                    _loadExpiryAlerts();
+                  }
+                },
+              ),
+            ],
+          ),
           const SizedBox(height: 16),
           if (_loadingAlerts)
             const Center(child: CircularProgressIndicator())
@@ -837,15 +1191,68 @@ class _ReportTabState extends State<ReportTab> {
                 } catch (_) {}
 
                 return Card(
-                  color: AppColors.error.withOpacity(0.1),
+                  margin: const EdgeInsets.only(bottom: 8),
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: Colors.grey.shade200),
+                  ),
                   child: ListTile(
-                    leading: const Icon(Icons.warning, color: AppColors.error),
+                    leading: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.error.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(
+                        Icons.warning_amber_rounded,
+                        color: AppColors.error,
+                      ),
+                    ),
                     title: Text(
                       item['brand_name'] ?? 'Unknown',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    subtitle: Text(
-                      'Expires: $formattedDate | Stock: ${item['quantity']}',
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.calendar_today,
+                              size: 14,
+                              color: Colors.grey[600],
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Expires: $formattedDate',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.inventory_2,
+                              size: 14,
+                              color: Colors.grey[600],
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'Stock: ${item['quantity']}',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
                 );
@@ -955,8 +1362,19 @@ class _SalesTabState extends State<SalesTab> {
       (item) => item['inventory_id'] == _selectedItem!.inventoryId,
     );
     if (index != -1) {
+      // Update existing
+      final currentQty = _cart[index]['quantity'] as int;
+      final newQty = currentQty + qty;
+      if (newQty > _selectedItem!.quantity) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Insufficient stock for total quantity'),
+          ),
+        );
+        return;
+      }
       setState(() {
-        _cart[index]['quantity'] = (_cart[index]['quantity'] as int) + qty;
+        _cart[index]['quantity'] = newQty;
         _selectedItem = null;
         _qtyCtrl.clear();
         _searchCtrl.clear();
@@ -968,6 +1386,10 @@ class _SalesTabState extends State<SalesTab> {
           'inventory_id': _selectedItem!.inventoryId,
           'medicine_id': _selectedItem!.medicineId,
           'quantity': qty,
+          'brand_name': _selectedItem!.brandName,
+          'unit_price': _selectedItem!.unitPrice,
+          'sale_price': _selectedItem!.unitPrice, // For consistency
+          'subtotal': _selectedItem!.unitPrice * qty,
           'item': _selectedItem, // For UI display
         });
         _selectedItem = null;
@@ -976,10 +1398,59 @@ class _SalesTabState extends State<SalesTab> {
         _qtyFocus.unfocus(); // Unfocus after adding
       });
     }
-    context.read<InventoryProvider>().search(
-      token: context.read<AuthProvider>().token!,
-      query: '',
-    ); // Clear search results
+
+    context
+        .read<InventoryProvider>()
+        .clearSearch(); // Clear search results without API call
+  }
+
+  void _editQuantity(int index) {
+    final item = _cart[index];
+    final invItem = item['item'] as InventoryItem;
+    final ctrl = TextEditingController(text: item['quantity'].toString());
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Edit Quantity: ${invItem.brandName}'),
+        content: TextField(
+          controller: ctrl,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            labelText: 'Quantity',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final qty = int.tryParse(ctrl.text) ?? 0;
+              if (qty <= 0) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Invalid quantity')),
+                );
+                return;
+              }
+              if (qty > invItem.quantity) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Insufficient stock')),
+                );
+                return;
+              }
+              setState(() {
+                _cart[index]['quantity'] = qty;
+              });
+              Navigator.pop(context);
+            },
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _removeFromCart(int index) {
@@ -1016,9 +1487,13 @@ class _SalesTabState extends State<SalesTab> {
     final error = context.read<SalesProvider>().error;
     if (mounted) {
       if (error != null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(error)));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: AppColors.error,
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Sale created successfully')),
@@ -1082,18 +1557,19 @@ class _SalesTabState extends State<SalesTab> {
               labelText: 'Search medicine...',
               prefixIcon: Icon(Icons.search),
               hintText: 'Type to search automatically',
+              border: InputBorder.none,
             ),
             onChanged: _onSearchChanged,
           ),
-          if (inventoryProv.loading)
+          if (inventoryProv.searching)
             const Padding(
               padding: EdgeInsets.all(16),
               child: Center(child: CircularProgressIndicator()),
             ),
           if (_selectedItem == null &&
-              inventoryProv.items.isNotEmpty &&
+              inventoryProv.searchResults.isNotEmpty &&
               _searchCtrl.text.isNotEmpty &&
-              !inventoryProv.loading) ...[
+              !inventoryProv.searching) ...[
             const SizedBox(height: 8),
             Container(
               constraints: const BoxConstraints(maxHeight: 250),
@@ -1110,10 +1586,10 @@ class _SalesTabState extends State<SalesTab> {
               ),
               child: ListView.separated(
                 shrinkWrap: true,
-                itemCount: inventoryProv.items.length,
+                itemCount: inventoryProv.searchResults.length,
                 separatorBuilder: (_, __) => const Divider(height: 1),
                 itemBuilder: (context, index) {
-                  final item = inventoryProv.items[index];
+                  final item = inventoryProv.searchResults[index];
                   final isSelected =
                       _selectedItem?.inventoryId == item.inventoryId;
                   return ListTile(
@@ -1131,10 +1607,9 @@ class _SalesTabState extends State<SalesTab> {
                         _selectedItem = item;
                         _searchCtrl.text = item.brandName;
                         // Clear results to hide list, but keep selection
-                        context.read<InventoryProvider>().search(
-                          token: context.read<AuthProvider>().token!,
-                          query: '',
-                        );
+                        _searchCtrl.text = item.brandName;
+                        // Clear results to hide list, but keep selection
+                        context.read<InventoryProvider>().clearSearch();
                         FocusScope.of(
                           context,
                         ).requestFocus(_qtyFocus); // Auto-focus quantity
@@ -1189,8 +1664,22 @@ class _SalesTabState extends State<SalesTab> {
                             controller: _qtyCtrl,
                             focusNode: _qtyFocus,
                             keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
+                            decoration: InputDecoration(
                               labelText: 'Quantity',
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                                borderSide: BorderSide(color: Colors.grey),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(15),
+                                borderSide: BorderSide(
+                                  color: Theme.of(context).primaryColor,
+                                  width: 2,
+                                ),
+                              ),
                             ),
                             onSubmitted: (_) => _addToCart(), // Add on enter
                           ),
@@ -1254,6 +1743,7 @@ class _SalesTabState extends State<SalesTab> {
                       ),
                       onPressed: () => _removeFromCart(index),
                     ),
+                    onTap: () => _editQuantity(index),
                   ),
                 );
               },
@@ -1270,9 +1760,23 @@ class _SalesTabState extends State<SalesTab> {
                         child: TextField(
                           controller: _discountCtrl,
                           keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: 'Discount (%)',
                             suffixText: '%',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
                           ),
                           onChanged: (_) => setState(() {}),
                         ),
@@ -1282,8 +1786,22 @@ class _SalesTabState extends State<SalesTab> {
                         child: TextField(
                           controller: _roundOffCtrl,
                           keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: 'Round Off (+/-)',
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(color: Colors.grey),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(15),
+                              borderSide: BorderSide(
+                                color: Theme.of(context).primaryColor,
+                                width: 2,
+                              ),
+                            ),
                           ),
                           onChanged: (_) => setState(() {}),
                         ),
@@ -1294,9 +1812,23 @@ class _SalesTabState extends State<SalesTab> {
                   TextField(
                     controller: _paidCtrl,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       labelText: 'Paid Amount',
                       prefixText: '৳ ',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                        borderSide: BorderSide(color: Colors.grey),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(15),
+                        borderSide: BorderSide(
+                          color: Theme.of(context).primaryColor,
+                          width: 2,
+                        ),
+                      ),
                     ),
                     onChanged: (_) => setState(() {}),
                   ),

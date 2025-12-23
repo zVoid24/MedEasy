@@ -70,6 +70,13 @@ class _SaleCard extends StatelessWidget {
                       color: AppColors.primary,
                     ),
                   ),
+                  if (sale['is_pending'] == true) ...[
+                    const SizedBox(width: 8),
+                    Tooltip(
+                      message: 'Waiting to sync',
+                      child: Icon(Icons.sync, size: 16, color: Colors.orange),
+                    ),
+                  ],
                   Text(
                     formattedDate,
                     style: TextStyle(color: Colors.grey[600], fontSize: 12),

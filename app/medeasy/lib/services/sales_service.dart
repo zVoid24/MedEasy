@@ -32,4 +32,32 @@ class SalesService {
       throw Exception(body['error'] ?? 'Failed to create sale');
     }
   }
+
+  Future<List<dynamic>> getSales(
+    String token, {
+    String? startDate,
+    String? endDate,
+  }) async {
+    String query = '';
+    if (startDate != null && endDate != null) {
+      query = '?start_date=$startDate&end_date=$endDate';
+    }
+
+    final url = Uri.parse('${AppConfig.apiBaseUrl}/reports/sales$query');
+
+    final response = await http.get(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+    );
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body) as List<dynamic>;
+    } else {
+      final body = jsonDecode(response.body);
+      throw Exception(body['error'] ?? 'Failed to fetch sales');
+    }
+  }
 }

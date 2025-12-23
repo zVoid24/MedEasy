@@ -55,7 +55,7 @@ func Load() Config {
 		if password == "" {
 			password = "8135"
 		}
-		dsn = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, password, host, dbPort, name)
+		dsn = "postgresql://neondb_owner:npg_q17hrZHtWKGi@ep-orange-paper-a1lx87y3-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 	}
 
 	// Validate that port is numeric.
